@@ -7,7 +7,7 @@ library(doSNOW)
 
 ### data import from previous savings
 methods<-c(
-  'filtered',
+  'raw',
   'pam',
   'combat',
   'ccombat',
@@ -38,87 +38,125 @@ cumulative_gpca <- function(data,batch){
   (PCg-PCu)/PCg
 }
 
-compare_gpca<-function(data,batch,center=TRUE,scale=FALSE,log=FALSE,nperm=0,filename=NULL,filename_prefix=NULL,path=getwd()){
-  X<-data %>% t %>% scale(center=center,scale=scale) %>% t %>% na.omit %>% t
+gPCA<-function(data,batch,center=TRUE,scale=FALSE,log=FALSE,scaleY=FALSE,nperm=0,filename=NULL,filename_prefix=NULL,path=getwd()){
+  X<-data %>% t %>% scale(center,scale) %>% t %>% na.omit %>% t
   batch %<>% factor
   if(log) X %<>% subtract(X %>% min) %<>% add(1) %<>% log
   Y<-batch %>% unique %>% sapply(function(.)batch==.)
-  Ym<-t(t(Y)/colSums(Y))
+  if(scaleY) Y %<>% t %<>% divide_by(colSums(t(.))) %<>% t #Ym<-t(t(Y)/colSums(Y))
   'Computing PCA\n' %>% cat
   sv<-svd(X)
   'Computing gPCA\n' %>% cat
-  gsv<-svd(t(Ym)%*%X)
-  delta<-var(X%*%gsv$v[,1])[1]/var(X%*%sv$v[,1])[1] #var(sv$u[,1]*sv$d[1])#sum(colVars(X%*%sv$v))
+  gsv<-svd(t(Y)%*%X)
+  gpca<-list(
+    u=X%*%gsv$v %*% diag(1/gsv$d),
+    v=gsv$v,
+    d=gsv$d
+  )
+  PC.variances<-colVars(sv$u%*%diag(sv$d))
+  gPC.variances<-colVars(X%*%gsv$v)
+  variance.part<-gPC.variances[1]/sum(PC.variances)
+  'part of variance from gPC1 :' %>% paste(variance.part,'\n') %>% cat
+  delta<-gPC.variances[1]/PC.variances[1]
   'delta statistic :' %>% paste(delta,'\n') %>% cat
-  if(!(filename %>% is.null)){
-    'Printing PCA plots\n' %>% cat
-    #graphs printing in a pdf file
-    path %>% paste0('/',filename_prefix,'_',filename,'.pdf') %>% pdf
-    #pdf(getwd() %>% paste0('/',filename_prefix,filename,'.pdf'),width=18,height=18)
-    #PCA on the whole data
-    print(ggplot()+aes(x=sv$u[,1],y=sv$u[,2],colour=batch)+geom_point()+stat_ellipse()+
-            labs(title='PCA on the whole dataset',x='PC1 (eigengene 1)',y='PC2 (eigengene 2)'))
-    #PCA on batch-aggregated data (gPCA)
-    print(ggplot()+aes(x=gsv$u[,1],y=gsv$u[,2],colour=batch %>% unique)+geom_point(size=5)+
-            labs(title='PCA on the batch-aggregated data (gPCA)',x="PC'1",y="PC'2"))
-    #projection of the whole data on the PCs of batch-aggregated data
-    print(ggplot()+
-            aes(x=X%*%gsv$v[,1]/gsv$d[1],
-                y=X%*%gsv$v[,2]/gsv$d[2],
-                colour=batch)+geom_point()+stat_ellipse()+
-            geom_point(aes(x=gsv$u[,1],y=gsv$u[,2],colour=batch %>% unique),size=5)+
-            labs(title='Projection of the dataset on the batch-aggregated eigengenes',x="PC'1",y="PC'2"))
-    dev.off()
-    'PCA plots printed at ' %>% paste0(path,'/',filename_prefix,'_',filename,'.pdf\n') %>% message
+  cumdelta<-cumsum(gPC.variances)/cumsum(PC.variances[gPC.variances %>% seq_along])
+  'cumulative delta statistics :\n' %>% cat
+  'delta_' %>% paste0(cumdelta %>% seq_along,'=',cumdelta,'\n') %>% cat
+  variance.ranks<-gPC.variances %>% sapply(function(v)sum(v<PC.variances))
+  'variance ranks :' %>% paste(variance.ranks,'\n') %>% cat
+  #variance.ranks<-gPC.variances %>% cumsum %>% sapply(function(v)sum(v<(PC.variances %>% rev %>% cumsum %>% rev))+1)
+  if(nperm!=0){
+    #estimation of the p-value
+    'Estimating p-value\n' %>% cat
+    cl <- detectCores() %>% subtract(1) %>% makeSOCKcluster
+    cl %>% clusterExport(c('%>%','colVars'))
+    cl %>% registerDoSNOW
+    pb <- txtProgressBar(min=1, max=nperm, style=3)
+    delta_perm <- foreach(i=seq_len(nperm),
+                          .options.snow=list(progress=function(n)setTxtProgressBar(pb,n)),
+                          .combine='c') %dopar% {
+                            Y %<>% extract(Y %>% nrow %>% seq_len %>% sample,)
+                            batch %>% unique %>% sapply(function(.)batch %>% sample==.)
+                            gsv<-svd(t(Y)%*%X)
+                            var(X%*%gsv$v[,1])[1]
+                          }
+    pb %>% close
+    cl %>% stopCluster
+    #normalization
+    #delta_perm %<>% divide_by(sum(colVars(sv$u%*%diag(sv$d))))
+    delta_perm %<>% divide_by(var(X%*%sv$v[,1])[1]) #divide_by(var(sv$u[,1]*sv$d[1]))
+    
+    PCu<-var(sv$u[,1]*sv$d[1])/sum(diag(var(sv$u*diag(sv$d))))
+    p.value<-mean(delta<delta_perm)
   }
-  #estimation of the p-value
-  'Estimating p-value\n' %>% cat
-  cl <- detectCores() %>% subtract(1) %>% makeSOCKcluster
-  cl %>% clusterExport(c('%>%','colVars'))
-  cl %>% registerDoSNOW
-  pb <- txtProgressBar(min=1, max=nperm, style=3)
-  delta_perm <- foreach(i=seq_len(nperm),
-                        .options.snow=list(progress=function(n)setTxtProgressBar(pb,n)),
-                        .combine='c') %dopar% {
-                          Y<-batch %>% unique %>% sapply(function(.)batch %>% sample==.)
-                          Ym<-t(t(Y)/colSums(Y))
-                          gsv<-svd(t(Ym)%*%X)
-                          var(X%*%gsv$v[,1])[1]
-                        }
-  pb %>% close
-  cl %>% stopCluster
-  #normalization
-  #delta_perm %<>% divide_by(sum(colVars(sv$u%*%diag(sv$d))))
-  delta_perm %<>% divide_by(var(X%*%sv$v[,1])[1]) #divide_by(var(sv$u[,1]*sv$d[1]))
-  
-  # delta_perm<-NULL
-  # delta_perm<-(1:nperm) %>% parSapply(cl,.,
-  #                                     function(i){
-  #                                       Y<-batch %>% unique %>% sapply(function(.)batch %>% sample==.)
-  #                                       Ym<-t(t(Y)/colSums(Y))
-  #                                       gsv<-svd(t(Ym)%*%X)
-  #                                       cat(i)
-  #                                       return(colVars(X%*%gsv$v[,1])/sum(colVars(X%*%sv$v)))
-  #                                     })
-  # for(i in 1:nperm){
-  # Y<-batch %>% unique %>% sapply(function(.)batch %>% sample==.)
-  # Ym<-t(t(Y)/colSums(Y))
-  # gsv<-svd(t(Ym)%*%X)
-  # delta_perm %<>% c(colVars(X%*%gsv$v[,1])/sum(colVars(X%*%sv$v)))
-  # cat(i)
-  # }
-  PCu<-var(sv$u[,1]*sv$d[1])/sum(diag(var(sv$u*diag(sv$d))))
-  p.value<-mean(delta<delta_perm)
   return(list(
+    'variance.part'=variance.part,
+    'PC.variances'=PC.variances,
+    'gPC.variances'=gPC.variances,
     'delta'=delta,
-    'p.value'=p.value,
-    'delta_perm'=delta_perm
+    'cumdelta'=cumdelta,
+    'variance.ranks'=variance.ranks,
+    'p.value'='p.value' %>% get0,
+    'delta_perm'='delta_perm' %>% get0,
+    'pca'=sv,
+    'batch.pca'=gsv,
+    'gpca'=gpca,
+    'batch'=batch
   ))
-  #return((var(X%*%gsv$v[,1])/var(X%*%sv$v[,1]))[1])
+}
+
+viz_gpca<-function(gpca,dims=1:2,guided=TRUE){
+  pca<-if(guided) gpca$gpca else gpca$pca
+  ggplot()+aes(x=pca$u[,dims[1]],y=pca$u[,dims[2]],colour=batch)+geom_point()+stat_ellipse()
+}
+
+viz_gpca_contrib<-function(gpca,transformation=identity,end='max'){
+  end %<>% switch(max=gpca$variance.ranks %>% max+1, all=PC.variances %>% length, end)
+  ggplot()+
+    geom_bar(aes_string(y=gpca$PC.variances[1:end] %>% transformation,x=1:end),stat='identity')+
+    geom_bar(aes_string(y=gpca$gPC.variances %>% transformation,x=gpca$variance.ranks,fill=gpca$gPC.variances %>% seq_along %>% factor),stat='identity',width=.8,position='dodge')+
+    theme(legend.position = 'none')
+}
+
+gPCAs<-methods %>% lapply(function(method)method %>% get %>% gPCA(x))
+
+setwd('~/Comparison-of-batch-effect-correction-methods')
+'gPCA contributions.pdf' %>% pdf
+for(i in gPCAs %>% seq_along){
+  gPCAs[[i]] %>% viz_gpca_contrib %>% add(ggtitle(methods[i])) %>% print
+}
+dev.off()
+
+'gPCA log10 contributions.pdf' %>% pdf
+for(i in gPCAs %>% seq_along){
+  gPCAs[[i]] %>% viz_gpca_contrib(log10) %>% add(ggtitle(methods[i])) %>% print
+}
+dev.off()
+
+
+if(!(filename %>% is.null)){
+  'Printing PCA plots\n' %>% cat
+  #graphs printing in a pdf file
+  path %>% paste0('/',filename_prefix,'_',filename,'.pdf') %>% pdf
+  #pdf(getwd() %>% paste0('/',filename_prefix,filename,'.pdf'),width=18,height=18)
+  #PCA on the whole data
+  print(ggplot()+aes(x=sv$u[,1],y=sv$u[,2],colour=batch)+geom_point()+stat_ellipse()+
+          labs(title='PCA on the whole dataset',x='PC1 (eigengene 1)',y='PC2 (eigengene 2)'))
+  #PCA on batch-aggregated data (gPCA)
+  print(ggplot()+aes(x=gsv$u[,1],y=gsv$u[,2],colour=batch %>% unique)+geom_point(size=5)+
+          labs(title='PCA on the batch-aggregated data (gPCA)',x="PC'1",y="PC'2"))
+  #projection of the whole data on the PCs of batch-aggregated data
+  print(ggplot()+
+          aes(x=X%*%gsv$v[,1]/gsv$d[1],
+              y=X%*%gsv$v[,2]/gsv$d[2],
+              colour=batch)+geom_point()+stat_ellipse()+
+          geom_point(aes(x=gsv$u[,1],y=gsv$u[,2],colour=batch %>% unique),size=5)+
+          labs(title='Projection of the dataset on the batch-aggregated eigengenes',x="PC'1",y="PC'2"))
+  dev.off()
+  'PCA plots printed at ' %>% paste0(path,'/',filename_prefix,'_',filename,'.pdf\n') %>% message
 }
 
 
-for(method in methods) method %>% get %>% save(file=method %>% paste0('_data.Rdata'))
 gpca_comparison <- methods %>% sapply(
   function(data)compare_gpca(data %>% get,x,filename=data,filename_prefix='gPCA',scale=FALSE,log=FALSE,nperm=100)
 )
@@ -129,6 +167,7 @@ gpca_comparison_logged <- methods %>% sapply(
   function(data)compare_gpca(data %>% get,x,filename=data,filename_prefix='gPCAlogged',scale=TRUE,log=TRUE,nperm=100)
 )
 
+setwd(~/Comparison-of-batch-effect-correction-methods)
 'gPCA.pdf' %>% pdf
 for(i in methods %>% seq_along) gpca_comparison_scaled[,i] %>% view_delta_distribution %>% add(ggtitle(methods[i])) %>% print
 dev.off()
