@@ -4,6 +4,7 @@ library(factoextra)
 library(FactoMineR)
 library(parallel)
 library(doSNOW)
+library(gridExtra)
 
 ### data import from previous savings
 methods<-c(
@@ -15,13 +16,13 @@ methods<-c(
   'ra',
   'ruvg'
 )
-setwd('corrected data')
+setwd('c:/users/medion/desktop/Comparison-of-batch-effect-correction-methods/corrected data')
 for(method in methods) eval(parse(text=paste0(
   method,"<-get(load('",method,".Rdata'))"
 )))
 
-x<-as.factor(sapply(strsplit(colnames(filtered),split="_"),"[",2))#experiments
-tissue<-as.factor(sapply(strsplit(colnames(filtered),split="_"),"[",3))
+x<-as.factor(sapply(strsplit(colnames(raw),split="_"),"[",2))#experiments
+tissue<-as.factor(sapply(strsplit(colnames(raw),split="_"),"[",3))
 
 
 ### batch effect detection in the datasets with gPCA (guided PCA)
@@ -38,10 +39,10 @@ cumulative_gpca <- function(data,batch){
   (PCg-PCu)/PCg
 }
 
-gPCA<-function(data,batch,center=TRUE,scale=FALSE,log=FALSE,scaleY=FALSE,nperm=0,filename=NULL,filename_prefix=NULL,path=getwd()){
+gPCA<-function(data,batch,center=TRUE,scale=FALSE,log=FALSE,scaleY=FALSE,nperm=0){
+  if(log) data %<>% subtract(min(.)) %<>% add(1) %<>% log1p
   X<-data %>% t %>% scale(center,scale) %>% t %>% na.omit %>% t
   batch %<>% factor
-  if(log) X %<>% subtract(X %>% min) %<>% add(1) %<>% log
   Y<-batch %>% unique %>% sapply(function(.)batch==.)
   if(scaleY) Y %<>% t %<>% divide_by(colSums(t(.))) %<>% t #Ym<-t(t(Y)/colSums(Y))
   'Computing PCA\n' %>% cat
@@ -69,7 +70,7 @@ gPCA<-function(data,batch,center=TRUE,scale=FALSE,log=FALSE,scaleY=FALSE,nperm=0
     #estimation of the p-value
     'Estimating p-value\n' %>% cat
     cl <- detectCores() %>% subtract(1) %>% makeSOCKcluster
-    cl %>% clusterExport(c('%>%','colVars'))
+    cl %>% clusterExport(c('%>%','%<>%','extract','colVars'))
     cl %>% registerDoSNOW
     pb <- txtProgressBar(min=1, max=nperm, style=3)
     delta_perm <- foreach(i=seq_len(nperm),
@@ -107,15 +108,47 @@ gPCA<-function(data,batch,center=TRUE,scale=FALSE,log=FALSE,scaleY=FALSE,nperm=0
 
 viz_gpca<-function(gpca,dims=1:2,guided=TRUE){
   pca<-if(guided) gpca$gpca else gpca$pca
-  ggplot()+aes(x=pca$u[,dims[1]],y=pca$u[,dims[2]],colour=batch)+geom_point()+stat_ellipse()
+  ggplot()+aes(x=pca$u[,dims[1]],y=pca$u[,dims[2]],colour=gpca$batch)+
+    geom_point()+stat_ellipse()+
+    xlab(if(guided) paste0('gPC',dims[1],'~PC',gpca$variance.ranks[dims[1]]) else paste0('PC',dims[1]))+
+    ylab(if(guided) paste0('gPC',dims[2],'~PC',gpca$variance.ranks[dims[2]]) else paste0('PC',dims[2]))+
+    labs(colour='batch')
 }
 
+# viz_gpca_contrib<-function(gpca,transformation=identity,end='max'){
+#   end%<>%as.character%<>%switch(max=gpca$variance.ranks %>% max+1, all=gpca$PC.variances %>% length, end %>% as.numeric)
+#   ranks.plot<-ggplot()+
+#     geom_bar(aes_string(y=gpca$PC.variances[1:end] %>% transformation,x=1:end),stat='identity',width=1)+
+#     geom_bar(aes_string(y=gpca$gPC.variances %>% transformation,x=gpca$variance.ranks,fill=gpca$gPC.variances %>% seq_along %>% factor),stat='identity',width=1,position='dodge')+
+#     xlim(c(0,end+1))+
+#     theme(legend.position='none')
+#   endc<-gpca$gPC.variances %>% length
+#   cumulative.plot<-ggplot()+
+#     geom_bar(aes(y=gpca$PC.variances[1:endc] %>% cumsum %>% transformation,x=1:endc),stat='identity',width=1)+
+#     geom_bar(aes(y=gpca$gPC.variances %>% cumsum %>% transformation,x=gpca$gPC.variances %>% seq_along,fill=gpca$gPC.variances %>% seq_along %>% factor),stat='identity',width=1,position='dodge')+
+#     theme(legend.position='none')
+#   grid.arrange(ranks.plot,cumulative.plot,ncol=2)
+# }
+
 viz_gpca_contrib<-function(gpca,transformation=identity,end='max'){
-  end %<>% switch(max=gpca$variance.ranks %>% max+1, all=PC.variances %>% length, end)
-  ggplot()+
-    geom_bar(aes_string(y=gpca$PC.variances[1:end] %>% transformation,x=1:end),stat='identity')+
-    geom_bar(aes_string(y=gpca$gPC.variances %>% transformation,x=gpca$variance.ranks,fill=gpca$gPC.variances %>% seq_along %>% factor),stat='identity',width=.8,position='dodge')+
-    theme(legend.position = 'none')
+  end%<>%as.character%<>%switch(max=gpca$variance.ranks %>% max+1, all=gpca$PC.variances %>% length, end %>% as.numeric)
+  ranks.plot<-ggplot()+
+    geom_bar(aes_string(y=gpca$PC.variances[1:end] %>% transformation,x=1:end),stat='identity',width=1)+
+    geom_bar(aes_string(y=gpca$gPC.variances %>% transformation,x=gpca$variance.ranks,fill=gpca$gPC.variances %>% seq_along %>% factor),stat='identity',width=1,position='dodge')+
+    xlim(c(0,end+1))+
+    theme(legend.position='none')+xlab('PCs')+ylab('Parts of variance')
+  endc<-gpca$gPC.variances %>% length
+  cumulative.plot<-ggplot(mapping=aes(x=gpca$gPC.variances %>% seq_along %>% factor))+
+    geom_bar(aes(y=gpca$PC.variances[1:endc] %>% cumsum %>% transformation),stat='identity',width=1)+
+    geom_bar(aes(y=gpca$gPC.variances %>% cumsum %>% transformation,fill=gpca$gPC.variances %>% seq_along %>% factor),stat='identity',width=1,position='dodge')+
+    theme(legend.position='none')+xlab('PCs')+ylab('Cumulative parts of variance')+
+    geom_text(aes(label=gpca$cumdelta %>% round(2),
+                  y=gpca$gPC.variances %>% cumsum %>% transformation %>% divide_by(2)))
+  # cumulative.plot<-ggplot()+
+  #   geom_bar(aes(y=gpca$PC.variances[1:endc] %>% cumsum %>% transformation,x=1:endc),stat='identity',width=1)+
+  #   geom_bar(aes(y=gpca$gPC.variances %>% cumsum %>% transformation,x=gpca$gPC.variances %>% seq_along,fill=gpca$gPC.variances %>% seq_along %>% factor),stat='identity',width=1,position='dodge')+
+  #   theme(legend.position='none')
+  grid.arrange(ranks.plot,cumulative.plot,ncol=2)
 }
 
 gPCAs<-methods %>% lapply(function(method)method %>% get %>% gPCA(x))
