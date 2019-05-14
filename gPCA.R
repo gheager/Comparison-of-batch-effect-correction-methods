@@ -40,7 +40,7 @@ cumulative_gpca <- function(data,batch){
 }
 
 gPCA<-function(data,batch,center=TRUE,scale=FALSE,log=FALSE,scaleY=FALSE,nperm=0){
-  if(log) data %<>% subtract(min(.)) %<>% add(1) %<>% log1p
+  if(log) data %<>% subtract(min(.)) %<>% log1p
   X<-data %>% t %>% scale(center,scale) %>% t %>% na.omit %>% t
   batch %<>% factor
   Y<-batch %>% unique %>% sapply(function(.)batch==.)
@@ -102,13 +102,14 @@ gPCA<-function(data,batch,center=TRUE,scale=FALSE,log=FALSE,scaleY=FALSE,nperm=0
     'pca'=sv,
     'batch.pca'=gsv,
     'gpca'=gpca,
-    'batch'=batch
+    'batch'=batch,
+    'na.omit'=X %>% attr('na.action')
   ))
 }
 
 viz_gpca<-function(gpca,dims=1:2,guided=TRUE){
   pca<-if(guided) gpca$gpca else gpca$pca
-  ggplot()+aes(x=pca$u[,dims[1]],y=pca$u[,dims[2]],colour=gpca$batch)+
+  ggplot()+aes(x=pca$u[,dims[1]]*pca$d[dims[1]],y=pca$u[,dims[2]]*pca$d[dims[2]],colour=gpca$batch)+
     geom_point()+stat_ellipse()+
     xlab(if(guided) paste0('gPC',dims[1],'~PC',gpca$variance.ranks[dims[1]]) else paste0('PC',dims[1]))+
     ylab(if(guided) paste0('gPC',dims[2],'~PC',gpca$variance.ranks[dims[2]]) else paste0('PC',dims[2]))+
