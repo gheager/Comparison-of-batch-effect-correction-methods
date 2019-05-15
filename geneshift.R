@@ -4,12 +4,12 @@ library(purrr)
 library(ggplot2)
 library(ExpressionAtlas)
 
-vector.shift<-function(v,k){
-  if(k==0) return(v)
-  if(k>0) return(c(0 %>% rep(k),v)[seq_along(v)])
-  if(k<0) return(c(v[-(1:-k)],0 %>% rep(-k)))
-}
-
+# vector.shift<-function(v,k){
+#   if(k==0) return(v)
+#   if(k>0) return(c(0 %>% rep(k),v)[seq_along(v)])
+#   if(k<0) return(c(v[-(1:-k)],0 %>% rep(-k)))
+# }
+# 
 # best.matching<-function(p,q){
 #   if(length(p$y)!=length(q$y)) stop('p & q densities should have the same length')
 #   d<-length(p$y)
@@ -74,19 +74,21 @@ b<-best.matching(A[1,batch==0] %>% density,A[1,batch==1] %>% density)
 #with gradient ascent
 #/!\ the inner product is not a concave function of the shift parameter...
 #when the distributions are multimodal, this function could even have several local maxima...
-inner.product_shift.derivative<-function(x0,x1){
-  
-}
-best.matching.shift<-function(x0,x1){
-  derivative<-o
-}
+# inner.product_shift.derivative<-function(x0,x1){
+#   
+# }
+# best.matching.shift<-function(x0,x1){
+#   derivative<-o
+# }
 
 #to be parallelized...
 #or think to a gradient ascent on the shift parameter (maybe an exact resolution exists for some kernel choice but it would be astonishing...)
 geneshift<-function(data,batch,step){
+  batch%<>%factor
+  batches<-levels(batch)
   data %>% apply(
     MARGIN=1,
-    FUN=as_mapper(~best.matching(.[batch==0] %>% density, .[batch==1] %>% density,step))
+    FUN=as_mapper(~best.matching(.[batch==batches[1]] %>% density, .[batch==batches[2]] %>% density,step))
   ) %>% transpose %>% lapply(simplify2array)
 }
 
@@ -113,12 +115,14 @@ ggplot()+geom_density(aes(x=B[3,],colour=batch %>% factor))
 
 #geneshift performed on principal components with partial reconstruction
 geneshift.pca<-function(data,batch,npc,step){
+  batch%<>%factor
+  batches<-levels(batch)
   data %<>% t %<>% scale(scale=FALSE)
   data %>% svd -> pca
   pca$u[,1:npc] %>% t %>% geneshift(batch,step) -> correction
   #ppca<-pca
   #ppca$u[batch==1,1:npc] %<>% t %<>% add(correction$offset) %<>% t
-  pca$u[batch==1,1:npc] %<>% t %<>% add(correction$offset) %<>% t
+  pca$u[batch==batches[2],1:npc] %<>% t %<>% add(correction$offset) %<>% t
   #avec la ligne precedente decommentee
   return(t(
     pca$u%*%diag(pca$d)%*%t(pca$v)
@@ -194,13 +198,13 @@ ggplot(mapping=aes(
 
 #effect on the gPCs of corrected data
 #before
-gg %>% viz_gpca + ggtitle('gPCs of raw data before correction') %>% print
-#after
 ggplot(mapping=aes(
   x=t(B)%*%gg$gpca$v[,1],
   y=t(B)%*%gg$gpca$v[,2],
   colour=batch
-))+geom_point()+stat_ellipse() + ggtitle('gPCs of corrected data after correction') %>% print
+))+geom_point()+stat_ellipse() + ggtitle('gPCs of corrected data before correction') %>% print
+#after
+gg %>% viz_gpca + ggtitle('gPCs of raw data after correction') %>% print
 
 
 
@@ -215,3 +219,5 @@ wrap_plots(
   ))+geom_point()+stat_ellipse(),
   ggplot()+geom_density(aes(x=t(g)%*%gb$pca$v[,2],colour=batch))+coord_flip()
 )
+
+viz_geneshift<-function(object,)

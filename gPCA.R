@@ -102,6 +102,7 @@ gPCA<-function(data,batch,center=TRUE,scale=FALSE,log=FALSE,scaleY=FALSE,nperm=0
     'pca'=sv,
     'batch.pca'=gsv,
     'gpca'=gpca,
+    'data'=data,
     'batch'=batch,
     'na.omit'=X %>% attr('na.action')
   ))
