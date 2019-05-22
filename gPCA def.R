@@ -93,3 +93,38 @@ viz_gpca_contrib<-function(gpca,transformation=identity,end='max'){
                   y=gpca$gPC.variances %>% cumsum %>% transformation %>% divide_by(2)))
   grid.arrange(ranks.plot,cumulative.plot,ncol=2)
 }
+
+viz_gpca_pvalue<-function(gpca){
+  if(is.null(gpca$p.value)){
+    stop('No p-value computed')
+  }else{
+    ggplot()+
+      geom_density(aes(x=gpca$delta_perm),colour='black',fill='black')+
+      geom_point(aes(x=gpca$delta,y=0),colour='red')+
+      geom_text(aes(x=gpca$delta,y=.1,label=gpca$p.value),colour='red')
+  }
+}
+
+compare.pca<-function(corrected,raw,batch,tissue,guided=FALSE){
+  if(guided){
+    raw.pca<-raw$gpca
+    corrected.pca<-corrected$gpca
+  }else{
+    raw.pca<-raw$pca
+    corrected.pca<-corrected$pca
+  }
+  grid.arrange(ncol=2,nrow=2,
+               raw %>% viz_gpca(guided=guided) + geom_line(aes(group=tissue),colour='grey') + theme(legend.position = 'none'),
+               ggplot(mapping=aes(
+                 x=t(corrected$data)%*%raw.pca$v[,1],
+                 y=t(corrected$data)%*%raw.pca$v[,2],
+                 colour=batch
+               ))+geom_point()+stat_ellipse() + geom_line(aes(group=tissue),colour='grey') + theme(legend.position = 'none'),
+               ggplot(mapping=aes(
+                 x=t(raw$data)%*%corrected.pca$v[,1],
+                 y=t(raw$data)%*%corrected.pca$v[,2],
+                 colour=batch
+               ))+geom_point()+stat_ellipse() + geom_line(aes(group=tissue),colour='grey') + theme(legend.position = 'none'),
+               corrected %>% viz_gpca(guided=guided) + geom_line(aes(group=tissue),colour='grey') + theme(legend.position = 'none')
+  )
+}

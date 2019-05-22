@@ -17,10 +17,10 @@ batch.inertia<-function(data,group,doPCA=TRUE,transpose=doPCA,center=TRUE,scale=
   group %>% levels -> groups
   if(transpose) data %<>% t
   if(doPCA) data %<>% scale(center,scale) %<>% na.omit %<>% svd %<>% use_series(u)
-  cumvars<-matrix(nrow=length(groups),ncol=ncol(data)) %>% set_rownames(groups)
+  cumvars<-matrix(nrow=length(groups),ncol=if(transpose) ncol(data) else nrow(data)) %>% set_rownames(groups)
   for(g in groups){
     if(sum(group==g)>1){
-      cumvars[g,]<-data %>% apply(2,as_mapper(
+      cumvars[g,]<-data %>% apply(if(transpose) 2 else 1,as_mapper(
         ~var(.[group==g])
       ))
     }

@@ -1,0 +1,235 @@
+---
+title: "Batch effect correction on the Mouse Baseline datasets"
+author: "Guillaume Heger"
+date: "20 May 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include=FALSE}
+library(ExpressionAtlas)
+library(ggplot2)
+library(magrittr)
+library(gridExtra)
+```
+
+```{r functions, include=FALSE}
+library(magrittr)
+library(parallel)
+library(doSNOW)
+library(gridExtra)
+
+gPCA<-function(data,batch,center=TRUE,scale=FALSE,log=FALSE,scaleY=FALSE,nperm=0){
+  if(log) data %<>% subtract(min(.)) %<>% log1p
+  X<-data %>% t %>% scale(center,scale) %>% t %>% na.omit %>% t
+  batch %<>% factor
+  Y<-batch %>% unique %>% sapply(function(.)batch==.)
+  if(scaleY) Y %<>% t %<>% divide_by(colSums(t(.))) %<>% t
+  'Computing PCA\n' %>% cat
+  sv<-svd(X)
+  'Computing gPCA\n' %>% cat
+  gsv<-svd(t(Y)%*%X)
+  gpca<-list(
+    u=X%*%gsv$v %*% diag(1/gsv$d),
+    v=gsv$v,
+    d=gsv$d
+  )
+  PC.variances<-colVars(sv$u%*%diag(sv$d))
+  gPC.variances<-colVars(X%*%gsv$v)
+  variance.part<-gPC.variances[1]/sum(PC.variances)
+  'part of variance from gPC1 :' %>% paste(variance.part,'\n') %>% cat
+  delta<-gPC.variances[1]/PC.variances[1]
+  'delta statistic :' %>% paste(delta,'\n') %>% cat
+  cumdelta<-cumsum(gPC.variances)/cumsum(PC.variances[gPC.variances %>% seq_along])
+  'cumulative delta statistics :\n' %>% cat
+  'delta_' %>% paste0(cumdelta %>% seq_along,'=',cumdelta,'\n') %>% cat
+  variance.ranks<-gPC.variances %>% sapply(function(v)sum(v<PC.variances))
+  'variance ranks :' %>% paste(variance.ranks,'\n') %>% cat
+  if(nperm!=0){
+    'Estimating p-value\n' %>% cat
+    cl <- detectCores() %>% subtract(1) %>% makeSOCKcluster
+    cl %>% clusterExport(c('%>%','%<>%','extract','colVars'))
+    cl %>% registerDoSNOW
+    pb <- txtProgressBar(min=1, max=nperm, style=3)
+    delta_perm <- foreach(i=seq_len(nperm),
+                          .options.snow=list(progress=function(n)setTxtProgressBar(pb,n)),
+                          .combine='c') %dopar% {
+                            Y %<>% extract(Y %>% nrow %>% seq_len %>% sample,)
+                            batch %>% unique %>% sapply(function(.)batch %>% sample==.)
+                            gsv<-svd(t(Y)%*%X)
+                            var(X%*%gsv$v[,1])[1]
+                          }
+    pb %>% close
+    cl %>% stopCluster
+    delta_perm %<>% divide_by(var(X%*%sv$v[,1])[1])
+    PCu<-var(sv$u[,1]*sv$d[1])/sum(diag(var(sv$u*diag(sv$d))))
+    p.value<-mean(delta<delta_perm)
+    'p-value :' %>% paste(p.value,'\n') %>% cat
+  }
+  return(list(
+    'variance.part'=variance.part,
+    'PC.variances'=PC.variances,
+    'gPC.variances'=gPC.variances,
+    'delta'=delta,
+    'cumdelta'=cumdelta,
+    'variance.ranks'=variance.ranks,
+    'p.value'='p.value' %>% get0,
+    'delta_perm'='delta_perm' %>% get0,
+    'pca'=sv,
+    'batch.pca'=gsv,
+    'gpca'=gpca,
+    'data'=data,
+    'batch'=batch,
+    'na.omit'=X %>% attr('na.action')
+  ))
+}
+
+viz_gpca<-function(gpca,dims=1:2,guided=TRUE){
+  pca<-if(guided) gpca$gpca else gpca$pca
+  ggplot()+aes(x=pca$u[,dims[1]]*pca$d[dims[1]],y=pca$u[,dims[2]]*pca$d[dims[2]],colour=gpca$batch)+
+    geom_point()+stat_ellipse()+
+    xlab(if(guided) paste0('gPC',dims[1],'~PC',gpca$variance.ranks[dims[1]]) else paste0('PC',dims[1]))+
+    ylab(if(guided) paste0('gPC',dims[2],'~PC',gpca$variance.ranks[dims[2]]) else paste0('PC',dims[2]))+
+    labs(colour='batch')
+}
+
+viz_gpca_contrib<-function(gpca,transformation=identity,end='max'){
+  end%<>%as.character%<>%switch(max=gpca$variance.ranks %>% max+1, all=gpca$PC.variances %>% length, end %>% as.numeric)
+  ranks.plot<-ggplot()+
+    geom_bar(aes_string(y=gpca$PC.variances[1:end] %>% transformation,x=1:end),stat='identity',width=1)+
+    geom_bar(aes_string(y=gpca$gPC.variances %>% transformation,x=gpca$variance.ranks,fill=gpca$gPC.variances %>% seq_along %>% factor),stat='identity',width=1,position='dodge')+
+    xlim(c(0,end+1))+
+    theme(legend.position='none')+xlab('PCs')+ylab('Parts of variance')
+  endc<-gpca$gPC.variances %>% length
+  cumulative.plot<-ggplot(mapping=aes(x=gpca$gPC.variances %>% seq_along %>% factor))+
+    geom_bar(aes(y=gpca$PC.variances[1:endc] %>% cumsum %>% transformation),stat='identity',width=1)+
+    geom_bar(aes(y=gpca$gPC.variances %>% cumsum %>% transformation,fill=gpca$gPC.variances %>% seq_along %>% factor),stat='identity',width=1,position='dodge')+
+    theme(legend.position='none')+xlab('PCs')+ylab('Cumulative parts of variance')+
+    geom_text(aes(label=gpca$cumdelta %>% round(2),
+                  y=gpca$gPC.variances %>% cumsum %>% transformation %>% divide_by(2)))
+  grid.arrange(ranks.plot,cumulative.plot,ncol=2)
+}
+
+viz_gpca_pvalue<-function(gpca){
+  if(is.null(gpca$p.value)){
+    stop('No p-value computed')
+  }else{
+    ggplot()+
+      geom_density(aes(x=gpca$delta_perm),colour='black',fill='black')+
+      geom_point(aes(x=gpca$delta,y=0),colour='red')+
+      geom_text(aes(x=gpca$delta,y=.1,label=gpca$p.value),colour='red')
+  }
+}
+
+compare.pca<-function(corrected,raw,batch,tissue,guided=FALSE){
+  if(guided){
+    raw.pca<-raw$gpca
+    corrected.pca<-corrected$gpca
+  }else{
+    raw.pca<-raw$pca
+    corrected.pca<-corrected$pca
+  }
+  grid.arrange(ncol=2,nrow=2,
+               raw %>% viz_gpca(guided=guided) + geom_line(aes(group=tissue),colour='grey') + theme(legend.position = 'none'),
+               ggplot(mapping=aes(
+                 x=t(corrected$data)%*%raw.pca$v[,1],
+                 y=t(corrected$data)%*%raw.pca$v[,2],
+                 colour=batch
+               ))+geom_point()+stat_ellipse() + geom_line(aes(group=tissue),colour='grey') + theme(legend.position = 'none'),
+               ggplot(mapping=aes(
+                 x=t(raw$data)%*%corrected.pca$v[,1],
+                 y=t(raw$data)%*%corrected.pca$v[,2],
+                 colour=batch
+               ))+geom_point()+stat_ellipse() + geom_line(aes(group=tissue),colour='grey') + theme(legend.position = 'none'),
+               corrected %>% viz_gpca(guided=guided) + geom_line(aes(group=tissue),colour='grey') + theme(legend.position = 'none')
+  )
+}
+```
+
+# Mouse datasets
+We work here with two RNASeq datasets from the Mouse's transcriptome. Their reference are GEOD74747 and MTAB4644. Both of them are available on the Expression Atlas. In these datasets, the only experimental variable is organism part.
+```{r datasets}
+geod74747<-get(load(
+  'Mus musculus/~organism part/E-GEOD-74747-atlasExperimentSummary.Rdata'
+))$rnaseq
+mtab4644<-get(load(
+  'Mus musculus/~organism part/E-MTAB-4644-atlasExperimentSummary.Rdata'
+))$rnaseq
+whole<-cbind(
+  geod74747 %>% assays %>% use_series(counts),
+  mtab4644 %>% assays %>% use_series(counts)
+)
+batch<-c(
+  'geod' %>% rep(dim(geod74747)[2]),
+  'mtab' %>% rep(dim(mtab4644)[2])
+)
+organ<-c(
+  geod74747$organism_part,
+  mtab4644$organism_part
+)
+```
+
+## First data visualisation
+We can see on this PCA of log-transformed that there is a huge heterogeneity of scale between the two datasets :
+```{r pca, echo=FALSE}
+whole %>% log1p %>% t %>% prcomp -> pca
+ggplot(mapping=aes(x=pca$x[,1],y=pca$x[,2],colour=batch))+
+  geom_point()+stat_ellipse()+
+  #geom_line(aes(group=organ),colour='grey')+
+  ggtitle('PCA of log-transformed data')+xlab('PC1')+ylab('PC2')
+```
+
+A quick investigation on the count matrix allows to understand why :
+```{r row1}
+whole[1,]
+```
+Indeed some genes have zero counts in the second dataset but not in the first one. Let's get rid of those genes... We select genes which have at least one non-zero count in both datasets.
+```{r filtering}
+filter<-rowSums(whole[,batch=='geod']!=0)>0 & rowSums(whole[,batch=='mtab']!=0)>0
+filtered<-whole[filter,]
+```
+
+## Visualisation of the filtered data
+```{r pca filtered, echo=FALSE}
+filtered %>% t %>% prcomp -> pca
+filtered %>% log1p %>% t %>% prcomp -> pcalog
+grid.arrange(
+  ggplot(mapping=aes(x=pca$x[,1],y=pca$x[,2],colour=batch))+
+    geom_point()+stat_ellipse()+
+    geom_line(aes(group=organ),colour='grey'),
+  ggplot(mapping=aes(x=pcalog$x[,1],y=pcalog$x[,2],colour=batch))+
+    geom_point()+stat_ellipse()+
+    geom_line(aes(group=organ),colour='grey'),
+  ncol=2,
+  top='PCA of filtered data\n before and after log transformation'
+)
+```
+Log transformation seems to stabilize variance across the datasets. Moreover we can see through the grey lines that link samples from the same organ, that this transformation shows an interesting correspondance between the two datasets in terms of biological variable. As these lines are almost parallel and have almost same length, we can infer a systematic additive bias between the log-counts of both datasets (which may yield a multiplicative bias between counts...)
+Then we keep the log transformation on the counts.
+```{r log transformation, include=FALSE}
+filtered %<>% log1p
+filtered %>% gPCA(batch,nperm=1000) -> gfiltered
+```
+```{r viz gpca, echo=FALSE}
+grid.arrange(
+  gfiltered %>% viz_gpca + geom_line(aes(group=organ),colour='grey'),
+  gfiltered %>% viz_gpca(guided=FALSE) + geom_line(aes(group=organ),colour='grey'),
+  gfiltered %>% viz_gpca_contrib,
+  gfiltered %>% viz_gpca_pvalue,
+  ncol=2
+)
+```
+
+# Batch effect correction using several methods
+##Batch mean centering (BMC)
+```{r bmc, include=FALSE}
+library(pamr)
+pamr.batchadjust(list(x=filtered,batchlabels=batch))$x -> pam
+pam %>% gPCA(batch,scaleY=TRUE,nperm=1000) -> gpam
+```
+```{r bmc viz}
+gpam %>% compare.pca(gfiltered,batch,organ)
+```
