@@ -1,0 +1,517 @@
+---
+title: "Tools for detection of batch effect between experiments with an application to the comparison of batch effect correction methods"
+author: "Guillaume Heger"
+date: "24 May 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.height=3,fig.align='center')
+```
+
+```{r libraries, include=FALSE}
+library(grid)
+library(gridExtra)
+library(latex2exp)
+library(ggplot2)
+library(magrittr)
+library(ExpressionAtlas)
+library(xtable)
+```
+
+#Introduction
+I introduce here three methods for batch effect detection in merged experiments datasets. The first two ones are based on consideration on the samples while the third one is based on consideration on the genes.
+
+I worked here with two RNASeq Baseline datasets from the Mouse transcriptome, extracted from Expression Atlas. Their reference are GEOD74747 and MTAB4644.
+
+In order to have two distributions which should theoretically be equal, I have only kept the common organism parts between the two experiments. A very simple filtering has been done then, omly extracting genes with 0 expression in one of the two experiments. Finally regarding the scale difference between the two datasets, I have log-transformed them to have a common scale between them. This may be subject of discussion.
+
+```{r dataset}
+geod74747<-get(load(
+  'Mus musculus/~organism part/E-GEOD-74747-atlasExperimentSummary.Rdata'
+))$rnaseq
+mtab4644<-get(load(
+  'Mus musculus/~organism part/E-MTAB-4644-atlasExperimentSummary.Rdata'
+))$rnaseq
+
+whole<-cbind(
+  geod74747 %>% assays %>% use_series(counts),
+  mtab4644 %>% assays %>% use_series(counts)
+)
+batch<-c(
+  'geod' %>% rep(dim(geod74747)[2]),
+  'mtab' %>% rep(dim(mtab4644)[2])
+)
+tissue<-c(
+  geod74747$organism_part,
+  mtab4644$organism_part
+)
+#keeping only common tissues
+common.tissues<-intersect(
+  tissue[batch=='geod'],
+  tissue[batch=='mtab']
+)
+whole %<>% extract(,tissue %in% common.tissues)
+batch %<>% extract(tissue %in% common.tissues)
+tissue %<>% extract(tissue %in% common.tissues)
+
+filter<-
+  rowSums(whole[,batch=='geod']>0)>0 & 
+  rowSums(whole[,batch=='mtab']>0)>0
+whole[filter,]->filtered
+
+filtered %>% t %>% prcomp -> pca
+filtered %>% log1p %>% t %>% prcomp -> pcalog
+grid.arrange(
+  ggplot(mapping=aes(x=pca$x[,1],y=pca$x[,2],colour=batch))+
+    geom_point()+stat_ellipse()+
+    geom_line(aes(group=tissue),colour='grey')+
+    ggtitle("PCA of filtered data"),
+  ggplot(mapping=aes(x=pcalog$x[,1],y=pcalog$x[,2],colour=batch))+
+    geom_point()+stat_ellipse()+
+    geom_line(aes(group=tissue),colour='grey')+
+    ggtitle("PCA of log-transformed filtered data"),
+  ncol=2
+)
+
+#LOG TRANSFORMATION
+filtered%<>%log1p
+```
+
+#Sample-based detection methods
+##Guided PCA (gPCA)
+The idea of gPCA comes from an article by Sarah Reese [A new statistic for identifying batch effects in high-throughput genomic data that uses guided principal component analysis.]
+I kept this fundamental idea and added some other features to it, among which is the notion of variance rank.
+In a nutshell, gPCA performs PCA on batchwise aggregated data (merged from all experiments) (aggregation can be sum or mean). The number of samples in the new dataset is the number of batches. Then we can project the non-aggregated data on the new "guided" principal components (gPCs). To see the importance of the "batch variable", one shall compare the parts of variance of the gPCs with the ones of the original principal components (PCs or eigengenes, i.e. from PCA on the merged dataset without batchwise aggregation). We can compute a $\delta$ statistic and its associated p-value (see [reference] for more information). This $\delta$ statistic represents somehow the part of variance of batch effect. We would like it to be small, or anyway with non-significant p-value, which would mean that batch effect has as much effect as normal random noise.
+
+```{r gPCA, include=FALSE}
+library(magrittr)
+library(parallel)
+library(doSNOW)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+
+gPCA<-function(data,batch,center=TRUE,scale=FALSE,log=FALSE,scaleY=FALSE,nperm=0,progress_bar=TRUE){
+  if(log) data %<>% subtract(min(.)) %<>% log1p
+  X<-data %>% t %>% scale(center,scale) %>% t %>% na.omit %>% t
+  batch %<>% factor
+  Y<-batch %>% unique %>% sapply(function(.)batch==.)
+  if(scaleY) Y %<>% t %<>% divide_by(colSums(t(.))) %<>% t
+  'Computing PCA\n' %>% cat
+  sv<-svd(X)
+  'Computing gPCA\n' %>% cat
+  gsv<-svd(t(Y)%*%X)
+  gpca<-list(
+    u=X%*%gsv$v %*% diag(1/gsv$d),
+    v=gsv$v,
+    d=gsv$d
+  )
+  PC.variances<-colVars(sv$u%*%diag(sv$d))
+  gPC.variances<-colVars(X%*%gsv$v)
+  variance.part<-gPC.variances[1]/sum(PC.variances)
+  'part of variance from gPC1 :' %>% paste(variance.part,'\n') %>% cat
+  delta<-gPC.variances[1]/PC.variances[1]
+  'delta statistic :' %>% paste(delta,'\n') %>% cat
+  cumdelta<-cumsum(gPC.variances)/cumsum(PC.variances[gPC.variances %>% seq_along])
+  'cumulative delta statistics :\n' %>% cat
+  'delta_' %>% paste0(cumdelta %>% seq_along,'=',cumdelta,'\n') %>% cat
+  variance.ranks<-gPC.variances %>% sapply(function(v)sum(v<PC.variances))
+  'variance ranks :' %>% paste(variance.ranks,'\n') %>% cat
+  if(nperm!=0){
+    'Estimating p-value\n' %>% cat
+    cl <- detectCores() %>% subtract(1) %>% makeSOCKcluster
+    cl %>% clusterExport(c('%>%','%<>%','extract','colVars'))
+    cl %>% registerDoSNOW
+    pb <- txtProgressBar(min=1, max=nperm, style=3)
+    delta_perm <- foreach(i=seq_len(nperm),
+                          .options.snow=list(if(progress_bar) progress=function(n)setTxtProgressBar(pb,n) else NULL),
+                          .combine='c') %dopar% {
+                            Y %<>% extract(Y %>% nrow %>% seq_len %>% sample,)
+                            batch %>% unique %>% sapply(function(.)batch %>% sample==.)
+                            gsv<-svd(t(Y)%*%X)
+                            var(X%*%gsv$v[,1])[1]
+                          }
+    pb %>% close
+    cl %>% stopCluster
+    delta_perm %<>% divide_by(var(X%*%sv$v[,1])[1])
+    PCu<-var(sv$u[,1]*sv$d[1])/sum(diag(var(sv$u*diag(sv$d))))
+    p.value<-mean(delta<delta_perm)
+    'p-value :' %>% paste(p.value,'\n') %>% cat
+  }
+  return(list(
+    'variance.part'=variance.part,
+    'PC.variances'=PC.variances,
+    'gPC.variances'=gPC.variances,
+    'delta'=delta,
+    'cumdelta'=cumdelta,
+    'variance.ranks'=variance.ranks,
+    'p.value'='p.value' %>% get0,
+    'delta_perm'='delta_perm' %>% get0,
+    'pca'=sv,
+    'batch.pca'=gsv,
+    'gpca'=gpca,
+    'data'=data,
+    'batch'=batch,
+    'na.omit'=X %>% attr('na.action')
+  ))
+}
+
+viz_gpca<-function(gpca,dims=1:2,guided=TRUE){
+  pca<-if(guided) gpca$gpca else gpca$pca
+  ggplot()+aes(x=pca$u[,dims[1]]*pca$d[dims[1]],y=pca$u[,dims[2]]*pca$d[dims[2]],colour=gpca$batch)+
+    geom_point()+stat_ellipse()+
+    xlab(if(guided) paste0('gPC',dims[1],'~PC',gpca$variance.ranks[dims[1]]) else paste0('PC',dims[1]))+
+    ylab(if(guided) paste0('gPC',dims[2],'~PC',gpca$variance.ranks[dims[2]]) else paste0('PC',dims[2]))+
+    labs(colour='batch')
+}
+
+viz_gpca_contrib<-function(gpca,transformation=identity,end='max',...){
+  end%<>%as.character%<>%switch(max=gpca$variance.ranks %>% max+1, all=gpca$PC.variances %>% length, end %>% as.numeric)
+  ranks.plot<-ggplot()+
+    geom_bar(aes_string(y=gpca$PC.variances[1:end] %>% transformation,x=1:end),stat='identity',width=1)+
+    geom_bar(aes_string(y=gpca$gPC.variances %>% transformation,x=gpca$variance.ranks,fill=gpca$gPC.variances %>% seq_along %>% factor),stat='identity',width=1,position='dodge')+
+    xlim(c(0,end+1))+
+    theme(legend.position='none')+xlab('PCs')+ylab('Parts of variance')
+  endc<-gpca$gPC.variances %>% length
+  cumulative.plot<-ggplot(mapping=aes(x=gpca$gPC.variances %>% seq_along %>% factor))+
+    geom_bar(aes(y=gpca$PC.variances[1:endc] %>% cumsum %>% transformation),stat='identity',width=1)+
+    geom_bar(aes(y=gpca$gPC.variances %>% cumsum %>% transformation,fill=gpca$gPC.variances %>% seq_along %>% factor),stat='identity',width=1,position='dodge')+
+    theme(legend.position='none')+xlab('PCs')+ylab('Cumulative parts of variance')+
+    geom_text(aes(label=gpca$cumdelta %>% round(2),
+                  y=gpca$gPC.variances %>% cumsum %>% transformation %>% divide_by(2)))
+  grid.arrange(ranks.plot,cumulative.plot,ncol=2,...)
+}
+
+viz_gpca_pvalue<-function(gpca){
+  if(is.null(gpca$p.value)){
+    stop('No p-value computed')
+  }else{
+    ggplot()+
+      geom_density(aes(x=gpca$delta_perm),colour='black')+
+      geom_point(aes(x=gpca$delta,y=0),colour='red')+
+      geom_text(aes(x=gpca$delta,y=.1,label=gpca$p.value),colour='red')
+  }
+}
+
+compare.pca<-function(corrected,raw,batch,tissue,guided=FALSE,...){
+  if(guided){
+    raw.pca<-raw$gpca
+    corrected.pca<-corrected$gpca
+  }else{
+    raw.pca<-raw$pca
+    corrected.pca<-corrected$pca
+  }
+  grid.arrange(ncol=2,nrow=2,...,
+               bottom=arrangeGrob(textGrob('before correction'),textGrob('after correction'),ncol=2),
+               right=arrangeGrob(textGrob('PCs of raw data',rot=-90),textGrob('PCs of corrected data',rot=-90),nrow=2),
+               raw %>% viz_gpca(guided=guided) + geom_line(aes(group=tissue),colour='grey') + theme(legend.position = 'none'),
+               ggplot(mapping=aes(
+                 x=t(corrected$data)%*%raw.pca$v[,1],
+                 y=t(corrected$data)%*%raw.pca$v[,2],
+                 colour=batch
+               ))+geom_point()+stat_ellipse() + 
+                 geom_line(aes(group=tissue),colour='grey') + 
+                 xlab('PC1')+ylab('PC2')+
+                 theme(legend.position = 'none'),
+               ggplot(mapping=aes(
+                 x=t(raw$data)%*%corrected.pca$v[,1],
+                 y=t(raw$data)%*%corrected.pca$v[,2],
+                 colour=batch
+               ))+geom_point()+stat_ellipse() + 
+                 geom_line(aes(group=tissue),colour='grey') + 
+                 xlab('PC1')+ylab('PC2')+
+                 theme(legend.position = 'none'),
+               corrected %>% viz_gpca(guided=guided) + geom_line(aes(group=tissue),colour='grey') + theme(legend.position = 'none')
+  )
+}
+```
+
+The following call to the function `gPCA` shows several statistics:
+```{r gpca filtered}
+filtered %>% gPCA(batch,nperm=1000,progress_bar = FALSE) -> gfiltered
+```
+The first figure shown is the absolute part of variance of the first gPC, analogous to the parts of variance typically computed for classical PCA.
+Then we can see the $\delta$ statistic which is the ratio of the previous part of variance from $gPC_1$ by the part of variance from $PC_1$ :
+
+$$\delta = \frac{\mathbb V gPC_1}{\mathbb V PC_1}$$
+
+As PC1 is the one-dimensional axis which has most variance in the space of eigengenes, this ratio shall be less than 1. If $\delta$ is close to 1, it means that batch effect is responsible of a big part of variance in the dataset.
+
+The following are cumulative $\delta$ statistics. Their number is the number of batches considered. $\delta_1$ is exactly $\delta$ while $\delta_2$ is the ratio between the cumulative part of variance of $gPC_1$ and $gPC_2$ and the cumulative part of variance of $PC_1$ and $PC_2$. In a general way :
+
+$$\delta_k = \frac{\mathbb V gPC_1 +...+ \mathbb V gPC_k}{\mathbb V PC_1 +...+ \mathbb V PC_k}$$
+
+Finally, the variance ranks are displayed. They position the parts of variance of the gPCs among the parts of variance of the PCs. The variance rank of gPC1 is the minimal number $n$ such that $PC_{n+1}$ has a smaller part of variance. Here the variance rank of $gPC_1$ is 1, which means that the batch effect creates variance in a comparable order of magnitude to $PC_1$.
+
+We can show all these results graphically. The plot below shows the first plan of gPCA ($gPC_1$ and $gPC2$). The grey lines link the samples extracted from the same tissue in the different experiments.
+```{r viz_gpca filtered}
+gfiltered %>% viz_gpca + geom_line(aes(group=tissue),colour='grey')
+```
+
+The function `gPCA` computes both gPCA and PCA, in order to compare them. Below is the first plan of PCA ($PC_1$ and $PC_2$).
+```{r viz_gpca unguided filtered}
+gfiltered %>% viz_gpca(guided=FALSE) + geom_line(aes(group=tissue),colour='grey')
+```
+
+We can also visualise the cumulative parts of variance and cumulative $\delta$ statistics with their variance ranks shown on the variance profile of the dataset : 
+```{r viz_gpca_contrib filtered}
+gfiltered %>% viz_gpca_contrib
+```
+
+Finally, we can show the p-value on a density plot. This density plot is estimated by permuting the batch labels in order to compare the effect of the real batches with whose of fake batches, assimilated to random noise.
+```{r viz_gpca_pvalue filtered}
+gfiltered %>% viz_gpca_pvalue
+```
+
+##Intra-class inertia index
+Contrarily to the previous method, the intra-class inertia index takes into account the available biological information that differs between the samples of a dataset. In our example of the Mouse datasets, the experimental variable is the organism part. 
+
+#A gene-based detection method
+```{r batchgenemap,include=FALSE}
+library(magrittr)
+library(ggplot2)
+library(latex2exp)
+
+angle<-function(u,v){
+  u%<>%matrix
+  v%<>%matrix
+  return((t(u)%*%v/(norm(u,'F')*norm(v,'F')))[1] %>% acos %>% divide_by(pi) %>% round(3) %>% paste('$\\pi$'))
+}
+
+batchgeneladder<-function(data,batch,mapping=identity,pc=1){
+  batch%<>%factor; batch %>% levels -> batches
+  data[,batch==batches[1]] %>% t %>% prcomp -> pca1
+  data[,batch==batches[2]] %>% t %>% prcomp -> pca2
+  data %>% t %>% prcomp -> pca3
+  ngenes<-nrow(data)
+  ggplot()+aes(
+    x=c(-1,-1/3,1/3,1) %>% rep(each=ngenes),
+    y=c(
+      pca3$rotation[,pc],
+      pca1$rotation[,pc],
+      pca2$rotation[,pc],
+      pca3$rotation[,pc]
+    ) %>% sapply(mapping),
+    colour=c('',batches[1],batches[2],'') %>% rep(each=ngenes),
+    group=ngenes %>% seq_len %>% rep(4)
+  )+geom_point()+scale_colour_manual(values=c('green','red','blue'),name='batch')+
+    geom_line(colour='black',alpha=.2)+
+    xlab('')+ylab('weight in eigengene' %>% paste(pc))+
+    annotate(geom='text',x=-2/3,y=0,colour='white',label=angle(pca1$rotation[,pc],pca3$rotation[,pc]) %>% TeX(output='character'),parse=TRUE)+
+    annotate(geom='text',x=0,y=0,colour='white',label=angle(pca1$rotation[,pc],pca2$rotation[,pc]) %>% TeX(output='character'),parse=TRUE)+
+    annotate(geom='text',x=2/3,y=0,colour='white',label=angle(pca2$rotation[,pc],pca3$rotation[,pc]) %>% TeX(output='character'),parse=TRUE)
+}
+
+batchgenemap<-function(data,batch,pcs=1:2,xshift=NULL,yshift=NULL){
+  ngenes<-nrow(data)
+  batch%<>%factor
+  batch %>% levels -> batches
+  data[,batch==batches[1]] %>% t %>% prcomp -> pca1
+  data[,batch==batches[2]] %>% t %>% prcomp -> pca2
+  data %>% t %>% prcomp -> pca3
+  if(xshift %>% is.null) 
+    c(max(abs(pca1$rotation[,pcs[1]]))+max(abs(pca3$rotation[,pcs[1]])),0)*2->xshift
+  if(yshift %>% is.null)
+    c(0,max(abs(pca2$rotation[,pcs[2]]))+max(abs(pca3$rotation[,pcs[2]])))*2->yshift
+  ggplot()+aes(
+    x=c(
+      pca1$rotation[,pcs[1]],
+      pca2$rotation[,pcs[1]],
+      pca3$rotation[,pcs[1]]
+    )+xshift %>% c(0) %>% rep(each=ngenes),
+    y=c(
+      pca1$rotation[,pcs[2]],
+      pca2$rotation[,pcs[2]],
+      pca3$rotation[,pcs[2]]
+    )+yshift %>% c(0) %>% rep(each=ngenes),
+    colour=c(batches[1],batches[2],'') %>% rep(each=ngenes)
+  )+geom_point()+
+    scale_colour_manual(values=c('green','red','blue'),name='batch')+
+    geom_line(aes(group=c(1:ngenes %>% rep(2),-(1:ngenes)) %>% factor),colour='magenta',alpha=.1)+
+    geom_line(aes(group=c(1:ngenes,-(1:ngenes),1:ngenes) %>% factor),colour='orange',alpha=.1)+
+    geom_line(aes(group=c(-(1:ngenes),1:ngenes %>% rep(2)) %>% factor),colour='cyan',alpha=.1)+
+    xlab('coordinate on eigengene' %>% paste(pcs[1]))+ylab('coordinate on eigengene' %>% paste(pcs[2]))
+}
+```
+Previous methods for estimating the importance of batch effect between the experiments are based on consideration on the samples. Here I try to introduce a new kind of estimation based on consideration on the genes and their relation with the eigengenes computed by PCA.
+This idea is driven by the fact that a biologist wants to know in general which genes are "important" in a dataset, that is to say which genes create most variance between the samples of an experiment.
+The basical idea of PCA is to find, not such genes, but eigengenes (which can be interpreted of summary of real genes with weights on each of them). The eigengenes are designed to be empirically decorrelated across the samples and to be ordered according to part of variance. Notably the first eigengene (PC1) is the summary of real genes (i.e. linear combination of real genes coordinates) that create most variance among all those possible summaries.
+As eigengenes are expressed with weights on genes, these weights allow to highlight some genes (for example, we can consider that the most discriminant genes in a dataset are those which have the highest weights (in absolute value) for the first eigengene).
+
+As PCA is a common way to visualise the results of an experiment, we can consider a new approach of the problem of batch effect. Actually to decide if there is batch effect between two experiments, one can wonder two questions :
+
+- Do the two experiments highlight the same genes ?
+
+- Does the merger of the two experiments highlight the same genes than each experiment taken separately ?
+
+This can be rephrased in terms of weights of genes in the eigengenes of the three datasets : the first experiment, the second one, and their merger. In other words :
+
+- Do the two experiments have the same eigengenes ?
+
+- Does their merger have the same eigengenes than each experiment considered separately ? 
+
+As eigengenes represents geometrical directions in the space of genes, a good way to compare them is to calculate angles between them. 
+Let's take our example of the two Mouse datasets : data has been filtered and log-transformed. We will calculate the angle between the first eigengene of the first dataset (denoted $PC_1^1$) and the first eigengene of the second dataset (denoted $PC_1^2$), as well as the angles between the PC1 of the merger (denoted $PC_1^m$) with $PC_1^1$ and $PC_1^2$. Thus we have before any correction :
+
+```{r genemap, echo=FALSE}
+batchgeneladder(filtered,batch)+ggtitle('gene ladder for filtered data')
+```
+
+We can see that the angles $\widehat{PC^1_1,PC^m_1}$ and $\widehat{PC^2_1,PC^m_1}$ are very close to the right angle $\frac{\pi}{2}$, which means that the batch effect completely changes the main directions of variance when we consider the merged dataset. Regarding the angle $\widehat{PC^1_1,PC^2_1}$ between the PC1 of the two original datasets, it is smaller (approximately $\frac{\pi}{3}$) but quite important though. It means that the two experiments contain different information.
+
+Then we can apply BMC to this merged dataset. The angle $\widehat{PC^1_1,PC^2_1}$ doesn't change, as it can be expected, because the only transformation is a shift, which doesn't change the variance of the dataset. However, the angles of the individual datasets with their merger have become much smaller (less than $\frac{\pi}{5}$). Indeed an important part of the variance due to batch effect has been removed with mean centering. Previously a big part of variance was simply explained by the gap between the two datasets (visible on figure... (PCA))
+
+If we apply ComBat, it really seems that this angle measure is sensitive to correction, as all the 3 angles have decreased.
+
+#Comparison of different batch effect correction methods using these tools
+```{r corrections,include=FALSE}
+#pam
+library(pamr)
+pamr.batchadjust(list(x=filtered,batchlabels=batch))$x -> pam
+#combat
+library(sva)
+ComBat(filtered,batch) -> combat
+#ccombat
+ComBat(filtered,batch,mod=model.matrix(~tissue)) -> ccombat
+#harmony
+library(harmony)
+HarmonyMatrix(filtered,
+              meta_data=data.frame(batch,tissue),
+              vars_use = 'batch',
+              do_pca=FALSE,nclust=2)->hm
+#ruvg
+library(RUVSeq)
+rowVars(filtered[,batch=='geod']) -> vargeod
+rowVars(filtered[,batch=='mtab']) -> varmtab
+threshold<-(vargeod+varmtab) %>% quantile(.01)
+(vargeod+varmtab) %>% is_less_than(threshold) %>% which -> negative.genes
+RUVg(filtered,
+     negative.genes,
+     k=1,isLog=TRUE)->ruvg
+```
+
+##Using gPCA
+###Batch Mean Centering (BMC)
+```{r pam gpca}
+pam %>% gPCA(batch,nperm=1000) -> gpam
+```
+```{r pam gpca viz, echo=FALSE}
+gpam %>% viz_gpca + geom_line(aes(group=tissue),colour='grey') + ggtitle('Guided principal components of BMC-corrected dataset')
+```
+```{r pam gpca viz unguided, echo=FALSE}
+gpam %>% viz_gpca(guided=FALSE) + geom_line(aes(group=tissue),colour='grey') + ggtitle('Principal components of BMC-corrected dataset')
+```
+```{r pam gpca viz detection, echo=FALSE}
+grid.arrange(
+  gpam %>% viz_gpca_contrib,
+  gpam %>% viz_gpca_pvalue,
+  ncol=2,top='Batch effect detection in BMC-corrected dataset'
+)
+```
+
+BMC method has astonishing results if we analyse them using gPCA. It is actually normal as gPCA performs PCA on batchwise mean-aggregated data. Yet the two batches of the BMC corrected data have the same mean, by definition of BMC. Therefore gPCA is performed on one (aggregated) sample, which is theoretically not possible. The functions works though due to computing errors, but the result is worthless. gPCA is not applicable to BMC method.
+
+However it is very easy to understand that BMC is a very simple method that tries to correct batch effect in the case of a systematic additive bias. Although it can remove a big part of batch effect, it is not a generic method as it needs the two distributions to be the same. However here it seems to be a good method as the samples from same tissue are close to each other.
+
+###Empirical Bayes Method (ComBat)
+####Without biological factor in the model
+```{r combat gpca}
+combat %>% gPCA(batch,nperm=1000) -> gcombat
+```
+```{r combat gpca viz,echo=FALSE}
+gcombat %>% viz_gpca + geom_line(aes(group=tissue),colour='grey') + ggtitle('Guided principal components of ComBat-corrected dataset\n without biological factor in the model')
+```
+```{r combat gpca viz unguided, echo=FALSE}
+gcombat %>% viz_gpca(guided=FALSE) + geom_line(aes(group=tissue),colour='grey') + ggtitle('Principal components of ComBat-corrected dataset\n without biological factor in the model')
+```
+```{r combat gpca viz detection, echo=FALSE}
+grid.arrange(
+  gcombat %>% viz_gpca_contrib,
+  gcombat %>% viz_gpca_pvalue,
+  ncol=2,top='Batch effect detection in ComBat-corrected dataset\n without biological factor in the model'
+)
+```
+
+ComBat's gPCA score is very good and on the unguided PCA visualisation, samples seem to be clustered according to the organism part factor in most cases.
+
+####With biological factor in the model
+```{r ccombat gpca}
+ccombat %>% gPCA(batch,nperm=1000) -> gccombat
+```
+```{r ccombat gpca viz,echo=FALSE}
+gccombat %>% viz_gpca + geom_line(aes(group=tissue),colour='grey') + ggtitle('Guided principal components of ComBat-corrected dataset\n with organism part factor in the model')
+```
+```{r ccombat gpca viz unguided,echo=FALSE}
+gccombat %>% viz_gpca(guided=FALSE) + geom_line(aes(group=tissue),colour='grey') + ggtitle('Principal components of ComBat-corrected dataset\n with organism part factor in the model')
+```
+```{r ccombat gpca viz detection,echo=FALSE}
+grid.arrange(
+  gccombat %>% viz_gpca_contrib,
+  gccombat %>% viz_gpca_pvalue,
+  ncol=2,top='Batch effect detection in ComBat-corrected dataset\n with organism part factor in the model'
+)
+```
+
+ComBat's gPCA score is even better when considering organism part as a factor in the model. Samples are still clustered according to organism part.
+
+###Harmony
+```{r hm gpca}
+hm %>% gPCA(batch,nperm=1000)->ghm
+```
+```{r hm gpca viz,echo=FALSE}
+ghm %>% viz_gpca + geom_line(aes(group=tissue),colour='grey') + ggtitle('Guided principal components of Harmony-corrected dataset')
+```
+```{r hm gpca viz unguided,echo=FALSE}
+ghm %>% viz_gpca(guided=FALSE) + geom_line(aes(group=tissue),colour='grey') + ggtitle('Principal components of Harmony-corrected dataset')
+```
+```{r hm gpca viz detection,echo=FALSE}
+grid.arrange(
+  ghm %>% viz_gpca_contrib,
+  ghm %>% viz_gpca_pvalue,
+  ncol=2,top='Batch effect detection in Harmony-corrected dataset'
+)
+```
+
+Harmony doesn't seem to work well here. Maybe we lack data for this method.
+
+###RUVg
+```{r ruvg gpca}
+ruvg$normalizedCounts %>% gPCA(batch,nperm=1000) -> gruvg
+```
+```{r ruvg gpca viz,echo=FALSE}
+gruvg %>% viz_gpca + geom_line(aes(group=tissue),colour='grey') + ggtitle('Guided principal components of RUVg-corrected dataset')
+```
+```{r ruvg gpca viz unguided,echo=FALSE}
+gruvg %>% viz_gpca(guided=FALSE) + geom_line(aes(group=tissue),colour='grey') + ggtitle('Principal components of RUVg-corrected dataset')
+```
+```{r ruvg gpca viz detection,echo=FALSE}
+grid.arrange(
+  gruvg %>% viz_gpca_contrib,
+  gruvg %>% viz_gpca_pvalue,
+  ncol=2,top='Batch effect detection in RUVg-corrected dataset'
+)
+```
+
+RUVg has less impressive score than ComBat although it seems to cluster the samples according to organism part factor almost the same way as ComBat, at least on the first two principal components.
+
+##Using genemap
+```{r genemap correction,echo=FALSE,fig.height=2}
+batchgeneladder(filtered,batch)+ggtitle('gene ladder for filtered data')
+batchgeneladder(pam,batch)+ggtitle('gene ladder for BMC-corrected data')
+batchgeneladder(combat,batch)+ggtitle('gene ladder for ComBat-corrected data')
+batchgeneladder(ccombat,batch)+ggtitle('gene ladder for ComBat-corrected data\n with organism part factor in the model')
+batchgeneladder(hm,batch)+ggtitle('gene ladder for Harmony-corrected data')
+batchgeneladder(ruvg$normalizedCounts,batch)+ggtitle('gene ladder for RUVg-corrected data')
+```
+
+It appears in these graphics and angles that :
+
+- this detection tool is sensitive to correction methods : the angles $\widehat{PC^1_1,PC^m_1}$ and $\widehat{PC^2_1,PC^m_1}$ become much smaller after correction, whatever the method used.
+
+- the correction methods that were used don't seem to have an effect on the PCs of the separated dataset, except ComBat. Indeed the angle $\widehat{PC^1_1,PC^2_1}$ decreases slightly after ComBat correction, which means that ComBat try somehow to make the two experiments agree more...
+
+One can wonder whether this last bullet point is good or not. Should the correction force the two datasets to agree on the important genes ? Isn't there a risk to lose biological information by this way ?
+
+#Conclusion
+For the integration of such small datasets, ComBat seems to be a very good method for batch effect correction, which is not surprising as it uses a bayesian framework. Although this quality of bayesian framework could make 
