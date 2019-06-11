@@ -1,5 +1,6 @@
 #TESTS ON MOUSE DATASETS
 library(magrittr)
+library(ggplot2)
 library(ExpressionAtlas)
 
 geod74747<-get(load(
@@ -443,3 +444,14 @@ ccombat %>% t %>% prcomp -> pcb3ccombat
 angle(pcb1ccombat$rotation[,1],pcb2ccombat$rotation[,1])
 angle(pcb1ccombat$rotation[,1],pcb3ccombat$rotation[,1])
 angle(pcb3ccombat$rotation[,1],pcb2ccombat$rotation[,1])
+
+aw<-NULL;ap<-NULL;ac<-NULL
+for(i in 1:7){
+  aw%<>%c(anglepp(pcb1$rotation[,1:min(i,7)],pcb3$rotation[,1:i])+anglepp(pcb2$rotation[,1:min(i,7)],pcb3$rotation[,1:i]))
+  ap%<>%c(anglepp(pcb1p$rotation[,1:min(i,7)],pcb3p$rotation[,1:i])+anglepp(pcb2p$rotation[,1:min(i,7)],pcb3p$rotation[,1:i]))
+  ac%<>%c(anglepp(pcb1combat$rotation[,1:min(i,7)],pcb3combat$rotation[,1:i])+anglepp(pcb2combat$rotation[,1:min(i,7)],pcb3combat$rotation[,1:i]))
+}
+ggplot()+aes(x=1:7)+
+  geom_point(aes(y=aw),colour='red')+
+  geom_point(aes(y=ap),colour='green')+
+  geom_point(aes(y=ac),colour='blue')+scale_y_log10()

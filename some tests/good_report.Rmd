@@ -1,0 +1,12 @@
+---
+title: Two methods for batch effect detection with an application to batch effect
+  correction
+author: "Guillaume Heger"
+date: "06/06/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
