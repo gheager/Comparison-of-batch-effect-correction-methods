@@ -1,1 +1,1 @@
-# A comparison of existing batch effect comparison methods using gPCA and intra-class inertia
+# A comparison of existing batch effect comparison methods using gPCA and new "eigengenes angles" method
