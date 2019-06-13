@@ -5,7 +5,7 @@ library(ggplot2)
 library(ExpressionAtlas)
 library(igraph)
 
-batch_data<-"Mouse tissue atlas/batch data/"
+batch_data<-"Mouse Expression Atlas/batch data/"
 
 experiments<-list();for(filename in dir(batch_data)){
   experiments[[filename %>% str_split("-") %>% extract2(1) %>% extract(2:3) %>% paste(collapse="")]] <- get(load(paste0(batch_data,filename)))$rnaseq
@@ -21,8 +21,8 @@ data<-NULL;batch<-NULL;tissue<-NULL; for(i in experiments %>% seq_along){
 }; batch%<>%factor
 
 tissues <- tissue %>% split(batch)
-intersections<-NULL
-for(i in tissues %>% seq_along){
+
+intersections<-NULL;for(i in tissues %>% seq_along){
   for(j in tissues %>% seq_along){
     intersections%<>%c(length(intersect(tissues[[i]],tissues[[j]])))
   }
@@ -36,6 +36,7 @@ for(i in tissues %>% seq_along){
 #   intersections[[names(tissues)[[i]]]]<-l
 # }
 graph_from_adjacency_matrix(intersections) %>% plot
+"Mouse Expression Atlas/intersections graph.png" %>% png; graph_from_adjacency_matrix(intersections) %>% plot; dev.off()
 
 experiments[c('GEOD45278','GEOD44366','ERAD169')]<-NULL #removing isolated experiments
 
@@ -87,6 +88,8 @@ ggplot()+aes(x=pampca$x[,1],y=pampca$x[,2],colour=tissue)+geom_point()+stat_elli
 combat %>% t %>% prcomp -> combatpca
 ggplot()+aes(x=combatpca$x[,1],y=combatpca$x[,2],colour=tissue)+geom_point()+stat_ellipse()+
   scale_colour_manual(values=c('#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080', '#ffffff', '#000000')[1:14])#scale_colour_manual(values=c('red','orange','yellow','green','blue','aliceblue','purple','pink','black','grey','brown','magenta','cyan','white'))
+"Mouse Expression Atlas/ComBat PCA.png" %>% png; ggplot()+aes(x=combatpca$x[,1],y=combatpca$x[,2],colour=tissue)+geom_point()+stat_ellipse()+
+  scale_colour_manual(values=c('#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080', '#ffffff', '#000000')[1:14]); dev.off()
 
 ruv$normalizedCounts %>% t %>% prcomp(rank.=2) -> ruvpca
 ggplot()+aes(x=ruvpca$x[,1],y=ruvpca$x[,2],colour=tissue)+geom_point()+stat_ellipse()+
@@ -102,14 +105,19 @@ combat %>% eigenangles(batch,tissue) -> angcomb
 pam %>% eigenangles(batch,tissue) -> angpam
 ruv$normalizedCounts %>% eigenangles(batch,tissue) -> angruv
 
+angfilt %>% save(file="Mouse Expression Atlas/angfilt.Rdata")
+angcomb %>% save(file="Mouse Expression Atlas/angcomb.Rdata")
+angpam %>% save(file="Mouse Expression Atlas/angpam.Rdata")
+angruv %>% save(file="Mouse Expression Atlas/angruv.Rdata")
+
 list(filtered=angfilt,combat=angcomb,pam=angpam,ruv=angruv) %>% transpose -> ang
-'ang.pdf' %>% pdf;for(b in ang){
+'Mouse Expression Atlas/ang.pdf' %>% pdf;for(b in ang){
   plot(
     ggplot()+aes(x=seq_along(b$filtered))+
       geom_point(aes(y=b$filtered),colour='red')+
       geom_point(aes(y=b$combat),colour='green')+
       geom_point(aes(y=b$pam),colour='blue')+
-      geom_point(aes(y=b$ruv),colour='orange')#+scale_y_log10()
+      geom_point(aes(y=b$ruv),colour='orange')+scale_y_log10()
   )
 };dev.off()
 
