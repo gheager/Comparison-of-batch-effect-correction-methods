@@ -2,12 +2,13 @@ library(magrittr)
 library(pamr)
 library(sva)
 library(RUVSeq)
+library(batchelor)
 #library(harmony)
 
 library(SummarizedExperiment)
 
 correct.batch.effect<-function(data,batch,
-                               method=c('none','combat','ruv','bmc'),
+                               method=c('none','combat','ruv','mnn','bmc'),
                                model,log=TRUE,model.data,k=1,
                                gPCA=TRUE,genemap=TRUE){
   for(u in model.data %>% seq_along){
@@ -29,9 +30,12 @@ correct.batch.effect<-function(data,batch,
     else return(RUVs(data,cIdx=seq_len(nrow(data)),k=k,
                      scIdx=makeGroups(expand.grid(model.data) %>% apply(1,paste)),isLog=log)$normalizedCounts)
   }
+  else if(method=='mnn'){
+    return(mnnCorrect(data,batch=batch,k=k) %>% assays %$% corrected)
+  }
 }
 
-remove.batch.effect<-function(...,list=NULL,model=NULL,method=c('none','combat','ruv','bmc'),log=TRUE,k=1){
+remove.batch.effect<-function(...,list=NULL,model=NULL,method=c('none','combat','ruv','bmc','mnn'),log=TRUE,k=1){
   if(is.null(list)) experiments<-list(...) else experiments<-list; if(is.null(names(experiments))) names(experiments)<-paste0('batch',experiments %>% seq_along)
   genes<-experiments %>% map(rownames)
   common.genes<-genes %>% purrr::reduce(intersect)
