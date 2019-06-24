@@ -28,7 +28,7 @@ for(i in tissues %>% seq_along){
   }
 };intersections%<>%matrix(length(tissues))%<>%set_colnames(names(tissues))%<>%set_rownames(names(tissues))
 graph_from_adjacency_matrix(intersections) %>% plot
-"Human Expression Atlas/intersections graph.png" %>% png; graph_from_adjacency_matrix(intersections) %>% plot; dev.off()
+#"Human Expression Atlas/intersections graph.png" %>% png; graph_from_adjacency_matrix(intersections) %>% plot; dev.off()
 
 #no isolated experiment
 

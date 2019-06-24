@@ -68,11 +68,12 @@ intersections<-NULL; for(i in tissues %>% seq_along){
     intersections%<>%c(length(intersect(tissues[[i]],tissues[[j]])))
   }
 };intersections%<>%matrix(length(tissues))%<>%set_colnames(names(tissues))%<>%set_rownames(names(tissues))
-'Mouse Expression Atlas/body intersections graph.png' %>% png;igraph::graph_from_adjacency_matrix(intersections) %>% plot;dev.off()
+#'Mouse Expression Atlas/body intersections graph.png' %>% png;igraph::graph_from_adjacency_matrix(intersections) %>% plot;dev.off()
 
 experiments %>% remove.batch.effect(list=.,model=~organism_part,method='none')->Mouse.Expression.Atlas.nocorrection
 experiments %>% remove.batch.effect(list=.,model=~organism_part,method='combat')->Mouse.Expression.Atlas.ComBat
 experiments %>% remove.batch.effect(list=.,model=~organism_part,method='ruv')->Mouse.Expression.Atlas.RUV
+experiments %>% remove.batch.effect(list=.,model=~organism_part,method='mnn',k=3)->Mouse.ExpressionAtlas.MNN
 
 Mouse.Expression.Atlas.nocorrection %>% save(file='Mouse Expression Atlas/Mouse Expression Atlas no correction.Rdata')
 Mouse.Expression.Atlas.ComBat %>% save(file='Mouse Expression Atlas/Mouse Expression Atlas ComBat.Rdata')
