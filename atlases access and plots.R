@@ -2,6 +2,7 @@ colours20=c('#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#
 library(SummarizedExperiment)
 #Human Expression Atlas
 get(load('Mouse Expression Atlas/integrated data/Mouse Expression Atlas ComBat.Rdata')) -> Human.Expression.Atlas.ComBat
+get(load('Corn Expression Atlas/integrated data/Corn Expression Atlas RUV.Rdata')) -> Human.Expression.Atlas.ComBat
 
 Human.Expression.Atlas.ComBat %>% assays %$% counts %>% t %>% prcomp->humanpca
 ggplot()+aes(

@@ -10,6 +10,8 @@ library(SummarizedExperiment)
 correct.batch.effect<-function(data,batch,
                                method=c('none','combat','ruv','mnn','bmc'),
                                model,log=TRUE,model.data,k=1){
+                               model,log=TRUE,model.data,k=1,
+                               gPCA=TRUE,genemap=TRUE){
   for(u in model.data %>% seq_along){
     eval(parse(text=paste0(
       names(model.data)[u],'<-model.data[[u]]'

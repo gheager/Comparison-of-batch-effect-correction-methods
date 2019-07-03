@@ -8,6 +8,7 @@ angledet<-function(U,V){
     new.coord[,1:ncol(U)] %>% qr %>% qr.Q,
     new.coord[,ncol(U)+(1:ncol(V))] %>% qr %>% qr.Q
   ) %>% det %>% abs %>% asin/pi
+  ) %>% det %>% asin/pi
 }
 
 angles<-function(U,V){
@@ -20,6 +21,7 @@ angles<-function(U,V){
 
 eigenangles<-function(data,batch,tissue,scale=FALSE){
   data%<>%t%<>%na.omit%<>%t
+eigenangles<-function(data,batch,tissue){
   batch%<>%factor; batch %>% levels -> batches
   ###########################
   angles_batch_vs_all<-list()
@@ -34,6 +36,21 @@ eigenangles<-function(data,batch,tissue,scale=FALSE){
     angles_batch_vs_all[[b]]<-angles(
       data.all[filter,] %>% t %>% prcomp(scale=scale) %$% rotation,
       data.batch[filter,] %>% t %>% prcomp(scale=scale) %$% rotation
+      if(sum(tissue==t)>1){
+        data.all%<>%cbind(data[,tissue==t] %>% as.matrix %>% rowMeans)
+      }else{
+        data.all%<>%cbind(data[,tissue==t])
+      }
+      if(sum(tissue[batch==b]==t)>1){
+        data.batch%<>%cbind(data[,tissue==t & batch==b] %>% as.matrix %>% rowMeans)
+      }else{
+        data.batch%<>%cbind(data[,tissue==t & batch==b])
+      }
+      t %>% paste('\t') %>% cat
+    }
+    angles_batch_vs_all[[b]]<-angles(
+      data.all %>% t %>% prcomp %$% rotation,
+      data.batch %>% t %>% prcomp %$% rotation
     )
     b %>% paste('\n') %>% cat
   }
@@ -54,6 +71,12 @@ eigenangles<-function(data,batch,tissue,scale=FALSE){
           data.j[filter,] %>% t %>% prcomp(scale=scale) %$% rotation
         )
         angles_inter_batch[[batches[j]]][[batches[i]]]<-angles_inter_batch[[batches[i]]][[batches[j]]]
+      if(length(intersect(tissue[batch==batches[i]],tissue[batch==batches[j]]))>0){
+        angles_inter_batch[[batches[i]]][[batches[j]]]<-angles(
+          data.i %>% t %>% prcomp %$% rotation,
+          data.j %>% t %>% prcomp %$% rotation
+        )
+        #angles_inter_batch[[batches[j]]][[batches[i]]]<-angles_inter_batch[[batches[i]]][[batches[j]]]
       }
       batches[i] %>% paste('vs',batches[j],'\n') %>% cat
     }
@@ -90,6 +113,8 @@ eigenangles<-function(data,batch,tissue,scale=FALSE){
 #       angles(
 #         data.all %>% t %>% prcomp(scale=scale) %$% rotation,
 #         data.batch %>% t %>% prcomp(scale=scale) %$% rotation
+#         data.all %>% t %>% prcomp %$% rotation,
+#         data.batch %>% t %>% prcomp %$% rotation
 #       )
 #     }
 #   cl %>% stopCluster

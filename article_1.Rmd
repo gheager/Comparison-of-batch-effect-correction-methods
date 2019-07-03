@@ -8,62 +8,52 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message=FALSE, fig.height=3, fig.align='center')
+knitr::opts_chunk$set(echo = TRUE,fig.height=3,fig.align='center')
+```
+```{r library,include=FALSE}
+library(eigenangles)
+library(magrittr)
+library(SummarizedExperiment)
+library(ggplot2)
 ```
 
 I present here two different methods to be used in the context of the integration of datasets from different sources, subject to batch effect. I extracted one of them from an existing paper and I introduce a new one in this paper. Although both of them are based on Principal Components Analysis, the first one has what I would call a "sample-based" approach while the second one focuses more on the information given about genes.
 
 The final aim of this work is the creation of several Expression Atlases by merging the RNASeq datasets available on the existing Expression Atlas. The building of such atlases shall be done using heterogenous datasets which can definitely not be supposed to follow the same distribution. Therefore many batch effect correction algorithms can already be considered as irrelevant for this problem (batch-mean centering to name but one, as well as every method which doesn't take biological factors into account).
 
-# The data : Mouse Expression Atlas
-In this section, I show a typical workflow of data preparation before integration.
-```{r library,include=FALSE}
-#library(eigenangles)
-library(magrittr)
-library(purrr)
-library(stringr)
-library(SummarizedExperiment)
-library(ggplot2)
-```
-```{r dataset preparation}
-#relative path to the data of all the experiments
-batch_data<-"Mouse Expression Atlas/batch data/"
-#list of experiments
-experiments<-list()
-for(filename in dir(batch_data)){
-  experiments[[filename %>% str_split("-") %>% unlist %>% extract(2:3) %>% paste(collapse="")]] <- get(load(paste0(batch_data,filename)))$rnaseq
-}
-```
-```{r intersections, fig.cap="\\label{figs:figs}Graph of intersections between the experiments"}
-#tissues investigated in each experiment
-tissues<-experiments %>% map(~.$organism_part)
-#matrix of intersections between batches
-intersections<-NULL
-for(i in tissues %>% seq_along){
-  for(j in tissues %>% seq_along){
-    intersections%<>%c(length(intersect(tissues[[i]],tissues[[j]])))
-  }
-}
-intersections %<>% matrix(length(tissues)) %<>% set_colnames(names(tissues)) %<>% set_rownames(names(tissues))
-library(igraph)
-intersections %>% graph_from_adjacency_matrix %>% plot
-```
-As three experiments are isolated, one shall not try to integrate them, as it is not possible to correct batch effect with these experiments (since it is not possible then to dissociate batch effect from biological variations).
-```{r exclusion of isolated datasets}
-experiments[c('GEOD45278','GEOD44366','ERAD169')]<-NULL
-```
-After these steps, we can use the package `eigenangles` to integrate the datasets. Let's do it first without any batch effect correction :
-```{r integrate none}
-library(eigenangles)
-integrate.experiments(list=experiments, model=~organism_part, method="none")->all
-all
-```
-
 # A sample-based criterion
 The idea of gPCA comes from an article by Sarah Reese [A new statistic for identifying batch effects in high-throughput genomic data that uses guided principal component analysis.]
 I kept this fundamental idea and added some other features to it, among which is the notion of variance rank.
 In a nutshell, gPCA performs PCA on batchwise aggregated data (merged from all experiments) (aggregation can be sum or mean). The number of samples in the new dataset is the number of batches. Then we can project the non-aggregated data on the new "guided" principal components (gPCs). To see the importance of the "batch variable", one shall compare the parts of variance of the gPCs with the ones of the original principal components (PCs or eigengenes, i.e. from PCA on the merged dataset without batchwise aggregation). We can compute a $\delta$ statistic and its associated p-value (see [reference] for more information). This $\delta$ statistic represents somehow the part of variance of batch effect. We would like it to be small, or anyway with non-significant p-value, which would mean that batch effect has as much effect as normal random noise.
 
+```{r dataset preparation}
+#loading experiments
+geod74747<-get(load(
+  'Mouse Expression Atlas/batch data/E-GEOD-74747-atlasExperimentSummary.Rdata'
+))$rnaseq
+mtab4644<-get(load(
+  'Mouse Expression Atlas/batch data/E-MTAB-4644-atlasExperimentSummary.Rdata'
+))$rnaseq
+#extraction of counts matrices
+geod74747 %>% assays %$% counts -> geod
+mtab4644 %>% assays %$% counts -> mtab
+#merging the datasets without correction
+cbind(geod,mtab)->whole
+#batch and tissue factors
+batch<-c('geod' %>% rep(ncol(geod)),'mtab' %>% rep(ncol(mtab)))
+tissue<-c(geod74747$organism_part,mtab4644$organism_part)
+#extracting samples from tissues which are common to both experiments
+common.tissues<-intersect(tissue[batch=='geod'],tissue[batch=='mtab'])
+whole%<>%extract(,tissue%in%common.tissues)
+batch%<>%extract(tissue%in%common.tissues)
+tissue%<>%extract(tissue%in%common.tissues)
+#pre-filtering genes with only zero counts on one of the experiments
+filter<-rowSums(whole[,batch=='geod']!=0)>0 & rowSums(whole[,batch=='mtab']!=0)>0
+filtered<-whole[filter,] %>% log1p
+```
+```{r gpca filtered}
+filtered %>% gPCA(batch) -> gfiltered
+```
 
 The first figure shown is the absolute part of variance of the first gPC, analogous to the parts of variance typically computed for classical PCA.
 Then we can see the $\delta$ statistic which is the ratio of the previous part of variance from $gPC_1$ by the part of variance from $PC_1$ :
