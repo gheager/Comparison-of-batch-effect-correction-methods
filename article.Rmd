@@ -8,7 +8,7 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message=FALSE, fig.height=3, fig.align='center')
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, fig.height=2, fig.align="left")
 ```
 
 I present here two different methods to be used in the context of the integration of datasets from different sources, subject to batch effect. I extracted one of them from an existing paper and I introduce a new one in this paper. Although both of them are based on Principal Components Analysis, the first one has what I would call a "sample-based" approach while the second one focuses more on the information given about genes.
@@ -24,6 +24,7 @@ library(purrr)
 library(stringr)
 library(SummarizedExperiment)
 library(ggplot2)
+library(gridExtra)
 ```
 ```{r dataset preparation}
 #relative path to the data of all the experiments
@@ -52,51 +53,88 @@ As three experiments are isolated, one shall not try to integrate them, as it is
 ```{r exclusion of isolated datasets}
 experiments[c('GEOD45278','GEOD44366','ERAD169')]<-NULL
 ```
-After these steps, we can use the package `eigenangles` to integrate the datasets. Let's do it first without any batch effect correction :
+After these steps, the package `eigenangles` can be used to integrate the datasets. The datasets are merged within a unique `SummarizedExperiment` object. If one sets `method="none"`, no batch effect correction is applied. However the count matrix is log-transformed by default (it is possible not to do this transformation by setting `log=FALSE` within the call to `integrate.experiments`).
 ```{r integrate none}
 library(eigenangles)
-integrate.experiments(list=experiments, model=~organism_part, method="none")->all
+integrate.experiments(list=experiments, method="none") -> all
 all
 ```
 
+One can apply the available batch effect correction methods to integrate these experiments, such as :
+
+- ComBat :
+```{r integrate combat}
+integrate.experiments(list=experiments, method="combat", model = ~organism_part) -> combat
+```
+- RUVs :
+```{r integrate ruv}
+integrate.experiments(list=experiments, method="ruv", model = ~organism_part) -> ruv
+```
+- MNN :
+```{r integrate mnn}
+integrate.experiments(list=experiments, method="mnn", model = ~organism_part) -> mnn
+```
+
+Please note the presence of a `model` argument, that gives the biological differences between the samples, to be taken into account during batch effect correction. Here it is a formula `~organism_part` referring to the so called column in the `colData()` fields of all the experiments.
+
 # A sample-based criterion
-The idea of gPCA comes from an article by Sarah Reese [A new statistic for identifying batch effects in high-throughput genomic data that uses guided principal component analysis.]
-I kept this fundamental idea and added some other features to it, among which is the notion of variance rank.
-In a nutshell, gPCA performs PCA on batchwise aggregated data (merged from all experiments) (aggregation can be sum or mean). The number of samples in the new dataset is the number of batches. Then we can project the non-aggregated data on the new "guided" principal components (gPCs). To see the importance of the "batch variable", one shall compare the parts of variance of the gPCs with the ones of the original principal components (PCs or eigengenes, i.e. from PCA on the merged dataset without batchwise aggregation). We can compute a $\delta$ statistic and its associated p-value (see [reference] for more information). This $\delta$ statistic represents somehow the part of variance of batch effect. We would like it to be small, or anyway with non-significant p-value, which would mean that batch effect has as much effect as normal random noise.
+I introduce here the guided PCA which comes originally from an article by Sarah Reese [A new statistic for identifying batch effects in high-throughput genomic data that uses guided principal component analysis]. The `eigenangles` package has an implementation of this concept in order to compare the different batch effect correction algorithms.
 
+The idea of guided PCA is to perform PCA on a batch-aggregated dataset. All the samples from the same batch are averaged or summed to form one sample and PCA is performed on these new samples (one sample per batch). This PCA yields to some geometrical axes, that we will called guided principal components, different from the ones that standard PCA would give. The original samples (not aggregated) are then projected on these new directions so that the parts of variance of these axes can be estimated.
 
-The first figure shown is the absolute part of variance of the first gPC, analogous to the parts of variance typically computed for classical PCA.
-Then we can see the $\delta$ statistic which is the ratio of the previous part of variance from $gPC_1$ by the part of variance from $PC_1$ :
+The guided principal components are found in a way that they represent the directions of batch effect. If these directions are important compared to standard principal components, i.e. if their variance is comparable to the ones of low rank principal components, it would mean that batch effect is important.
 
-$$\delta = \frac{\mathbb V gPC_1}{\mathbb V PC_1}$$
-
-As PC1 is the one-dimensional axis which has most variance in the space of eigengenes, this ratio shall be less than 1. If $\delta$ is close to 1, it means that batch effect is responsible of a big part of variance in the dataset.
-
-The following figures are cumulative $\delta$ statistics. Their number is the number of batches considered. $\delta_1$ is exactly $\delta$ while $\delta_2$ is the ratio between the cumulative part of variance of $gPC_1$ and $gPC_2$ and the cumulative part of variance of $PC_1$ and $PC_2$. In a general way :
-
+To do this analysis, the function `gPCA` from package `eigenangles` gives two quantities :
+- the delta statistics, which are the ratio of variance of the guided principal subspaces and the standard principal subspaces. This quantity is necessarily less than 1, as the standard principal subspaces maximises the variance of the dataset when projected on a subspace of the same dimension. The definition of the delta statistics is denoted this way :
 $$\delta_k = \frac{\mathbb V gPC_1 +...+ \mathbb V gPC_k}{\mathbb V PC_1 +...+ \mathbb V PC_k}$$
 
-Finally, the variance ranks are displayed. They position the parts of variance of the gPCs among the parts of variance of the PCs. The variance rank of gPC1 is the minimal number $n$ such that $PC_{n+1}$ has a smaller part of variance. Here the variance rank of $gPC_1$ is 1, which means that the batch effect creates variance in a comparable order of magnitude to $PC_1$.
+- the ranks of variance of the guided principal components, defined for a guided principal component as the greatest rank such that the standard principal component of this rank has greater variance than the considered guided principal component.
 
-We can show all these results graphically. Figure \ref{fig:viz_gpca filtered} shows the first plan of gPCA ($gPC_1$ and $gPC_2$). The grey lines link the samples extracted from the same tissue in the different experiments.
-```{r viz_gpca filtered, fig.cap="\\label{figs:figs}First plan of variance of the merged dataset for guided PCA"}
-gfiltered %>% viz_gpca + geom_line(aes(group=tissue),colour='grey')
+The `eigenangles` package provides methods to visualise these quantities after running `gPCA` function on the dataset.
+
+Let us see the gPCA of the not corrected dataset, to evaluate the importance of batch effect within it :
+```{r gpca none}
+all %>% do_gPCA -> all.gpca
+```
+```{r gpca plot guided, fig.cap="\\label{figs:figs} First plan of variance of the guided PCA of the uncorrected dataset"}
+all.gpca %>% plot
+```
+```{r gpca plot unguided, fig.cap="\\label{figs:figs} First plan of variance of the standard PCA of the uncorrected dataset"}
+all.gpca %>% plot("unguided")
+```
+```{r gpca plot ranks, fig.cap="\\label{figs:figs} Ranks of variance of the guided principal components of the uncorrected dataset"}
+all.gpca %>% plot("ranks")
+```
+```{r gpca plot delta, fig.cap="\\label{figs:figs} Delta statistics shown on with cumulative parts of variance"}
+all.gpca %>% plot("delta")
 ```
 
-The function `gPCA` computes both gPCA and PCA, in order to compare them. Figure \ref{fig:viz_gpca unguided filtered} is the first plan of PCA ($PC_1$ and $PC_2$).
-```{r viz_gpca unguided filtered, fig.cap="\\label{figs:figs}First plan of variance of the merged dataset for PCA"}
-gfiltered %>% viz_gpca(guided=FALSE) + geom_line(aes(group=tissue),colour='grey')
+We will now apply this tool to the different corrected datasets, in order to benchmark the algorithms :
+```{r gpca combat, fig.cap="\\label{figs:figs} gPCA statistics of the dataset after ComBat correction", echo=FALSE}
+combat %>% do_gPCA -> combat.gpca
+grid.arrange(
+  combat.gpca %>% plot("ranks"),
+  combat.gpca %>% plot("delta"),
+  ncol=2
+)
+```
+```{r gpca ruv, fig.cap="\\label{figs:figs} gPCA statistics of the dataset after RUV correction", echo=FALSE}
+ruv %>% do_gPCA -> ruv.gpca
+grid.arrange(
+  ruv.gpca %>% plot("ranks"),
+  ruv.gpca %>% plot("delta"),
+  ncol=2
+)
+```
+```{r gpca mnn, fig.cap="\\label{figs:figs} gPCA statistics of the dataset after MNN correction", echo=FALSE}
+mnn %>% do_gPCA -> mnn.gpca
+grid.arrange(
+  mnn.gpca %>% plot("ranks"),
+  mnn.gpca %>% plot("delta"),
+  ncol=2
+)
 ```
 
-We can also visualise the cumulative parts of variance and cumulative $\delta$ statistics with their variance ranks shown on the variance profile of the dataset (figure \ref{fig:viz_gpca_contrib filtered}). The plot on the left shows the variances of the successive principal components in grey and the variances of the successive guided principal components in colours. The bars for guided principal components are positioned on x-axis according to their variance ranks.
-```{r viz_gpca_contrib filtered, fig.cap="\\label{figs:figs}Visualisation of the parts and ranks of variance\n summarising the importance of batch effect within the merged dataset"}
-gfiltered %>% viz_gpca_contrib
-```
-
-<!-- Finally, we can show the p-value on a density plot. This density plot is estimated by permuting the batch labels in order to compare the effect of the real batches with whose of fake batches, assimilated to random noise. -->
-<!-- ```{r viz_gpca_pvalue filtered} -->
-<!-- gfiltered %>% viz_gpca_pvalue -->
-<!-- ``` -->
 
 # A new gene-based criterion
 I introduce here a new method to evaluate the importance of batch effect within an integrated dataset. This method is based on some geometric consideration on the principal components of the single datasets compared to those of their merger (with or without correction). 
