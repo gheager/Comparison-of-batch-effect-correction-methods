@@ -8,7 +8,7 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message=FALSE, fig.height=2, fig.align="left")
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE, fig.height=2, fig.align="left")
 ```
 
 I present here two different methods to be used in the context of the integration of datasets from different sources, subject to batch effect. I extracted one of them from an existing paper and I introduce a new one in this paper. Although both of them are based on Principal Components Analysis, the first one has what I would call a "sample-based" approach while the second one focuses more on the information given about genes.
@@ -35,7 +35,7 @@ for(filename in dir(batch_data)){
   experiments[[filename %>% str_split("-") %>% unlist %>% extract(2:3) %>% paste(collapse="")]] <- get(load(paste0(batch_data,filename)))$rnaseq
 }
 ```
-```{r intersections, fig.cap="\\label{figs:figs}Graph of intersections between the experiments"}
+```{r intersections, fig.cap="\\label{figs:figs} Graph of intersections between the experiments", fig.show="hide"}
 #tissues investigated in each experiment
 tissues<-experiments %>% map(~.$organism_part)
 #matrix of intersections between batches
@@ -49,6 +49,8 @@ intersections %<>% matrix(length(tissues)) %<>% set_colnames(names(tissues)) %<>
 library(igraph)
 intersections %>% graph_from_adjacency_matrix %>% plot
 ```
+!["Graph of intersections between the experiments"](Mouse Expression Atlas/intersections graph.png)
+
 As three experiments are isolated, one shall not try to integrate them, as it is not possible to correct batch effect with these experiments (since it is not possible then to dissociate batch effect from biological variations).
 ```{r exclusion of isolated datasets}
 experiments[c('GEOD45278','GEOD44366','ERAD169')]<-NULL
@@ -103,9 +105,9 @@ all.gpca %>% plot
 all.gpca %>% plot("unguided")
 ```
 ```{r gpca plot ranks, fig.cap="\\label{figs:figs} Ranks of variance of the guided principal components of the uncorrected dataset"}
-all.gpca %>% plot("ranks")
+all.gpca %>% plot("ranks",rank.max=10)
 ```
-```{r gpca plot delta, fig.cap="\\label{figs:figs} Delta statistics shown on with cumulative parts of variance"}
+```{r gpca plot delta, fig.cap="\\label{figs:figs} Delta statistics shown with the cumulative parts of variance of both guided and unguided principal components of the uncorrected dataset"}
 all.gpca %>% plot("delta")
 ```
 
@@ -113,7 +115,7 @@ We will now apply this tool to the different corrected datasets, in order to ben
 ```{r gpca combat, fig.cap="\\label{figs:figs} gPCA statistics of the dataset after ComBat correction", echo=FALSE}
 combat %>% do_gPCA -> combat.gpca
 grid.arrange(
-  combat.gpca %>% plot("ranks"),
+  combat.gpca %>% plot("ranks",rank.max=10),
   combat.gpca %>% plot("delta"),
   ncol=2
 )
@@ -121,7 +123,7 @@ grid.arrange(
 ```{r gpca ruv, fig.cap="\\label{figs:figs} gPCA statistics of the dataset after RUV correction", echo=FALSE}
 ruv %>% do_gPCA -> ruv.gpca
 grid.arrange(
-  ruv.gpca %>% plot("ranks"),
+  ruv.gpca %>% plot("ranks",rank.max=10),
   ruv.gpca %>% plot("delta"),
   ncol=2
 )
@@ -129,7 +131,7 @@ grid.arrange(
 ```{r gpca mnn, fig.cap="\\label{figs:figs} gPCA statistics of the dataset after MNN correction", echo=FALSE}
 mnn %>% do_gPCA -> mnn.gpca
 grid.arrange(
-  mnn.gpca %>% plot("ranks"),
+  mnn.gpca %>% plot("ranks",rank.max=10),
   mnn.gpca %>% plot("delta"),
   ncol=2
 )
@@ -180,3 +182,21 @@ Thus we adopt the following framework to calculate angles between the subspaces 
 $$\alpha^i_n=\arcsin\det(\widetilde{PC}_1^{i\perp},...,\widetilde{PC}_n^{i\perp},\widetilde{\dot{PC}}_1^\perp,...,\widetilde{\dot{PC}}_n^\perp)$$
 
 ## Discussion on the scaling step before PCA
+...to be completed
+
+## Benchmark of the correction algorithms using eigengenes angles
+```{r eigenangles, echo=FALSE, include=FALSE}
+all %>% do_eigenangles("organism_part") -> all.angles
+combat %>% do_eigenangles("organism_part") -> combat.angles
+ruv %>% do_eigenangles("organism_part") -> ruv.angles
+mnn %>% do_eigenangles("organism_part") -> mnn.angles
+```
+```{r eigenangles plot, fig.cap="\\label{fig:fig} Eigengenes Angles for all corrections", fig.height=4, width=7}
+par(mfrow=c(1,2))
+plot(
+  uncorrected=all.angles,
+  ComBat=combat.angles,
+  RUV=ruv.angles,
+  MNN=mnn.angles
+)
+```

@@ -48,6 +48,14 @@ data<-NULL;batch<-NULL;tissue<-NULL; for(i in experiments %>% seq_along){
   batch%<>%c(names(experiments)[[i]] %>% rep(dim(experiments[[i]])[2]))
   tissue%<>%c(experiments[[i]]$organism_part)
 }; batch%<>%factor
+tissues <- tissue %>% split(batch)
+intersections<-NULL;for(i in tissues %>% seq_along){
+  for(j in tissues %>% seq_along){
+    intersections%<>%c(length(intersect(tissues[[i]],tissues[[j]])))
+  }
+};intersections%<>%matrix(length(tissues))%<>%set_colnames(names(tissues))%<>%set_rownames(names(tissues))
+graph_from_adjacency_matrix(intersections) %>% plot
+
 
 data %>% gPCA(batch) -> gdata
 gdata %>% viz_gpca(guided=FALSE)

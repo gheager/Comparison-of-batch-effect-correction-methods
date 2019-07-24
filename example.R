@@ -1,5 +1,6 @@
 library(magrittr)
 library(SummarizedExperiment)
+library(ggplot2)
 
 geod74747<-get(load(
   'Mouse Expression Atlas/batch data/E-GEOD-74747-atlasExperimentSummary.Rdata'
