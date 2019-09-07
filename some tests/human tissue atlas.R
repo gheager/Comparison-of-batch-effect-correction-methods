@@ -28,6 +28,10 @@ for(i in tissues %>% seq_along){
   }
 };intersections%<>%matrix(length(tissues))%<>%set_colnames(names(tissues))%<>%set_rownames(names(tissues))
 graph_from_adjacency_matrix(intersections) %>% plot
+library(GGally)
+library(network)
+intersections %>% network(ignore.eval=FALSE,names.eval='weights') %>% ggnet2(label=TRUE, edge.size = 'weights')
+
 #"Human Expression Atlas/intersections graph.png" %>% png; graph_from_adjacency_matrix(intersections) %>% plot; dev.off()
 
 #no isolated experiment

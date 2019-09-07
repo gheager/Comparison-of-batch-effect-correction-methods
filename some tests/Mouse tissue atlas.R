@@ -36,6 +36,10 @@ intersections<-NULL;for(i in tissues %>% seq_along){
 #   intersections[[names(tissues)[[i]]]]<-l
 # }
 graph_from_adjacency_matrix(intersections) %>% plot
+library(GGally)
+library(network)
+intersections %>% network(ignore.eval=FALSE,names.eval='weights') %>% ggnet2(label=TRUE, edge.size = 'weights')
+
 #"Mouse Expression Atlas/intersections graph.png" %>% png; graph_from_adjacency_matrix(intersections) %>% plot; dev.off()
 
 experiments[c('GEOD45278','GEOD44366','ERAD169')]<-NULL #removing isolated experiments
